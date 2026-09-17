@@ -42,6 +42,13 @@ services:
   worker:
     image: toogather:local
     restart: unless-stopped
+    # The image carries a HEALTHCHECK that polls the web app on port 8080.
+    # This service replaces the command with the worker loop, which serves
+    # no HTTP, so that probe could never pass and the container sat
+    # permanently "unhealthy". The worker has no socket to check, so it has
+    # no meaningful health probe: turn it off rather than fake one.
+    healthcheck:
+      disable: true
     env_file: .env
     environment:
       DATABASE_URL: postgresql://toogather:${POSTGRES_PASSWORD}@db:5432/toogather

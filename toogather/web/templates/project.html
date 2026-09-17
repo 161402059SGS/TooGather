@@ -1,120 +1,235 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }} | TooGather{% endblock %}
+
+{#- The project's front door. Order is deliberate: what we are trying to
+    achieve, then the drawers, then what needs a human's attention, then the
+    capture forms. Navigation lives in the sidebar, so there is none here. -#}
 {% block content %}
-{% set active = 'overview' %}{% include "_project_nav.html" %}
+  <h1>{{ project.name }}</h1>
+  {% if project.description %}<p class="lead">{{ project.description }}</p>{% endif %}
+  <p class="small faint">
+    You are <span class="badge {{ role }}">{{ role }}</span> here ·
+    <a href="/projects/{{ project.id }}/team">manage team</a>
+  </p>
 
-<div class="stats">
-  <div><strong>{{ findings|length }}</strong><span class="muted small">need attention</span></div>
-  <div><strong>{{ brief.awaiting_review }}</strong><span class="muted small">awaiting review</span></div>
-  <div><strong>{{ brief.open_commitments|length }}</strong><span class="muted small">open commitments</span></div>
-  <div><strong>{{ brief.open_questions|length }}</strong><span class="muted small">open questions</span></div>
-</div>
+  {#- Charter and SKILL.md: the two documents that belong to the project as a
+      whole rather than to any folder. -#}
+  <div class="grid grid-2">
+    {% if charter %}
+      <a class="tile" href="/documents/{{ charter.id }}">
+        <span class="tile-title"><span aria-hidden="true">◆</span> Project charter</span>
+        <span class="tile-desc">
+          {{ charter.body | preview or "What are we trying to achieve? Not filled in yet." }}
+        </span>
+        <span class="tile-meta">Updated {{ charter.updated_at.strftime('%d %b %Y') }}</span>
+      </a>
+    {% endif %}
+    {% if skill_doc %}
+      <a class="tile" href="/documents/{{ skill_doc.id }}">
+        <span class="tile-title"><span aria-hidden="true">✦</span> SKILL.md</span>
+        <span class="tile-desc">
+          What an AI agent should read before working on this project.
+        </span>
+        <span class="tile-meta">Updated {{ skill_doc.updated_at.strftime('%d %b %Y') }}</span>
+      </a>
+    {% endif %}
+  </div>
 
-<div class="columns">
-  <section>
+  <div class="section-head">
+    <h2>Folders</h2>
+    <span class="small faint">{{ folders | length }}</span>
+  </div>
+  <div class="grid grid-2">
+    {% for f in folders %}
+      <a class="tile" href="/projects/{{ project.id }}/folders/{{ f.id }}">
+        <span class="tile-title">
+          <span aria-hidden="true">
+            {%- if f.kind == 'code_context' %}◈
+            {%- elif f.kind == 'code_documentation' %}◉
+            {%- elif f.kind == 'technical' %}⚙
+            {%- elif f.kind == 'mom' %}🗓
+            {%- else %}▪{% endif -%}
+          </span>
+          {{ f.name }}
+        </span>
+        {% if f.description %}<span class="tile-desc">{{ f.description }}</span>{% endif %}
+        <span class="tile-meta">{{ f.doc_count }} document{{ '' if f.doc_count == 1 else 's' }}</span>
+      </a>
+    {% endfor %}
+  </div>
+
+  {% if can_edit %}
+    <div class="card">
+      <form method="post" action="/projects/{{ project.id }}/folders" class="btn-row">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label class="visually-hidden" for="folder_name">New folder name</label>
+        <input id="folder_name" name="name" type="text" maxlength="80"
+               placeholder="Add another folder, e.g. Client requirements">
+        <button class="secondary" type="submit">Add folder</button>
+      </form>
+    </div>
+  {% endif %}
+
+  {#- Below this line is the events side of TooGather: what the team decided
+      and promised, and what has quietly gone stale. -#}
+  <div class="section-head">
     <h2>Needs attention</h2>
-    {% if findings %}
-      <ul class="attention">
+    <a class="small" href="/projects/{{ project.id }}/review">Review queue →</a>
+  </div>
+
+  <div class="grid grid-3">
+    <div class="card">
+      <strong>{{ findings | length }}</strong>
+      <div class="small muted">need attention</div>
+    </div>
+    <div class="card">
+      <strong>{{ brief.awaiting_review }}</strong>
+      <div class="small muted">awaiting review</div>
+    </div>
+    <div class="card">
+      <strong>{{ brief.open_commitments | length }}</strong>
+      <div class="small muted">open commitments</div>
+    </div>
+    <div class="card">
+      <strong>{{ brief.open_questions | length }}</strong>
+      <div class="small muted">open questions</div>
+    </div>
+  </div>
+
+  {% if findings %}
+    <div class="doc-list">
       {% for f in findings %}
-        <li>
-          <span class="{{ f.severity }}">{{ 'Act now' if f.severity == 'high' else 'Check soon' }}</span>
-          <div><a href="/events/{{ f.event_id }}">{{ f.summary }}</a></div>
-          <div class="small muted">{{ f.message }}</div>
-        </li>
+        <a class="doc-row" href="/events/{{ f.event_id }}">
+          <span class="badge {{ 'danger' if f.severity == 'high' else 'warn' }}">
+            {{ 'Act now' if f.severity == 'high' else 'Soon' }}
+          </span>
+          <span class="doc-name">{{ f.summary }}</span>
+          <span class="doc-when">{{ f.message }}</span>
+        </a>
       {% endfor %}
-      </ul>
-    {% else %}
-      <p class="muted">Nothing needs attention. Commitments are on time and changes are linked to decisions.</p>
-    {% endif %}
+    </div>
+  {% else %}
+    <p class="muted small">
+      Nothing has gone stale. Commitments are on time and changes are linked to decisions.
+    </p>
+  {% endif %}
 
-    {% macro brief_list(title, items, empty) %}
-      <h2>{{ title }}</h2>
-      {% if items %}
-        <ul class="attention">
+  {% macro brief_list(title, items, empty) %}
+    <div class="section-head"><h2>{{ title }}</h2></div>
+    {% if items %}
+      <div class="doc-list">
         {% for i in items %}
-          <li>
-            <a href="/events/{{ i.id }}">{{ i.summary }}</a>
-            <div class="small muted">
-              {% if i.owner %}{{ i.owner }}{% endif %}{% if i.owner and i.due_date %}, {% endif %}{% if i.due_date %}due {{ i.due_date }}{% endif %}
-              {% if not i.owner and not i.due_date %}Recorded {{ i.recorded }}{% endif %}
-            </div>
-          </li>
+          <a class="doc-row" href="/events/{{ i.id }}">
+            <span class="doc-name">{{ i.summary }}</span>
+            <span class="doc-when">
+              {%- if i.owner %}{{ i.owner }}{% endif -%}
+              {%- if i.owner and i.due_date %} · {% endif -%}
+              {%- if i.due_date %}due {{ i.due_date }}{% endif -%}
+              {%- if not i.owner and not i.due_date %}{{ i.recorded }}{% endif -%}
+            </span>
+          </a>
         {% endfor %}
-        </ul>
-      {% else %}<p class="muted">{{ empty }}</p>{% endif %}
-    {% endmacro %}
-
-    {{ brief_list("Open commitments", brief.open_commitments[:8], "No open commitments.") }}
-    {{ brief_list("Latest decisions", brief.decisions[:8], "No decisions recorded yet.") }}
-    {{ brief_list("Open risks", brief.open_risks[:8], "No open risks.") }}
-    {{ brief_list("Open questions", brief.open_questions[:8], "No open questions.") }}
-  </section>
-
-  <aside>
-    {% if can_edit %}
-    <div class="panel">
-      <h3>Add meeting notes</h3>
-      <p class="small muted">Upload a MoM, transcript, or chat export. Suggested events appear in Review.</p>
-      <form method="post" action="/projects/{{ project.id }}/upload" enctype="multipart/form-data">
-        <input type="hidden" name="csrf" value="{{ csrf_token }}">
-        <label for="file">Text file</label>
-        <input id="file" name="file" type="file" accept=".txt,.md,.vtt,.srt,.csv">
-        <details>
-          <summary class="small">Or paste text</summary>
-          <label for="title">Title</label>
-          <input id="title" name="title" type="text" placeholder="e.g. MoM weekly sync {{ today }}">
-          <label for="pasted_text">Notes</label>
-          <textarea id="pasted_text" name="pasted_text"></textarea>
-        </details>
-        <p></p>
-        <button type="submit">Add notes</button>
-      </form>
-      {% if not project.ai_extraction_enabled %}
-        <p class="small muted">AI extraction is off for this project, so uploads are stored but not analysed.
-        {% if role == 'owner' %}<a href="/projects/{{ project.id }}/settings">Change this in settings.</a>{% endif %}</p>
-      {% endif %}
-    </div>
-
-    <div class="panel">
-      <h3>Record an event</h3>
-      <form method="post" action="/projects/{{ project.id }}/events">
-        <input type="hidden" name="csrf" value="{{ csrf_token }}">
-        <label for="type">Type</label>
-        <select id="type" name="type" required>
-          {% for t in EVENT_TYPES %}<option value="{{ t }}">{{ EVENT_TYPE_LABELS[t] }}</option>{% endfor %}
-        </select>
-        <label for="summary">Summary</label>
-        <input id="summary" name="summary" type="text" required placeholder="One clear sentence">
-        <div class="row">
-          <div><label for="owner">Owner</label><input id="owner" name="owner" type="text"></div>
-          <div><label for="due_date">Due date</label><input id="due_date" name="due_date" type="date"></div>
-        </div>
-        <label for="source_ref">Where did this come from?</label>
-        <input id="source_ref" name="source_ref" type="text" placeholder="Meeting date, ticket, commit">
-        <label for="detail">Details (optional)</label>
-        <textarea id="detail" name="detail"></textarea>
-        <p></p>
-        <button type="submit">Record event</button>
-      </form>
-    </div>
+      </div>
+    {% else %}
+      <p class="muted small">{{ empty }}</p>
     {% endif %}
+  {% endmacro %}
 
-    <div class="panel">
-      <h3>Recent notes</h3>
-      {% if sources %}
-        <ul class="attention">
-        {% for s in sources %}
-          <li>
-            <div>{{ s.filename }}</div>
-            <div class="small muted">
-              {{ s.status }}{% if s.event_count %}, {{ s.event_count }} event(s){% endif %}
-              {% if s.status_note %}<br>{{ s.status_note }}{% endif %}
+  {{ brief_list("Open commitments", brief.open_commitments[:8], "No open commitments.") }}
+  {{ brief_list("Latest decisions", brief.decisions[:8], "No decisions recorded yet.") }}
+  {{ brief_list("Open risks", brief.open_risks[:8], "No open risks.") }}
+  {{ brief_list("Open questions", brief.open_questions[:8], "No open questions.") }}
+
+  {% if can_edit %}
+    <div class="section-head"><h2>Add to the record</h2></div>
+    <div class="grid grid-2">
+      <div class="card">
+        <h3>Meeting notes</h3>
+        <p class="small muted">
+          Upload a MoM, transcript, or chat export. Suggested events appear in Review.
+        </p>
+        <form method="post" action="/projects/{{ project.id }}/upload"
+              enctype="multipart/form-data">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <div class="field">
+            <label for="file">Text file</label>
+            <input id="file" name="file" type="file" accept=".txt,.md,.vtt,.srt,.csv">
+          </div>
+          <details>
+            <summary class="small muted">Or paste text</summary>
+            <div class="field">
+              <label for="title">Title</label>
+              <input id="title" name="title" type="text"
+                     placeholder="e.g. MoM weekly sync {{ today }}">
             </div>
-          </li>
-        {% endfor %}
-        </ul>
-      {% else %}<p class="small muted">No notes uploaded yet.</p>{% endif %}
+            <div class="field">
+              <label for="pasted_text">Notes</label>
+              <textarea id="pasted_text" name="pasted_text"></textarea>
+            </div>
+          </details>
+          <button type="submit">Add notes</button>
+        </form>
+        {% if not project.ai_extraction_enabled %}
+          <p class="hint">
+            AI extraction is off, so uploads are stored but not analysed.
+            {% if role == 'owner' %}
+              <a href="/projects/{{ project.id }}/settings">Change this in settings.</a>
+            {% endif %}
+          </p>
+        {% endif %}
+      </div>
+
+      <div class="card">
+        <h3>Record an event</h3>
+        <form method="post" action="/projects/{{ project.id }}/events">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <div class="field">
+            <label for="type">Type</label>
+            <select id="type" name="type" required>
+              {% for t in EVENT_TYPES %}
+                <option value="{{ t }}">{{ EVENT_TYPE_LABELS[t] }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="field">
+            <label for="summary">Summary</label>
+            <input id="summary" name="summary" type="text" required
+                   placeholder="One clear sentence">
+          </div>
+          <div class="field">
+            <label for="owner">Owner</label>
+            <input id="owner" name="owner" type="text">
+          </div>
+          <div class="field">
+            <label for="due_date">Due date</label>
+            <input id="due_date" name="due_date" type="date">
+          </div>
+          <div class="field">
+            <label for="source_ref">Where did this come from?</label>
+            <input id="source_ref" name="source_ref" type="text"
+                   placeholder="Meeting date, ticket, commit">
+          </div>
+          <div class="field">
+            <label for="detail">Details (optional)</label>
+            <textarea id="detail" name="detail"></textarea>
+          </div>
+          <button type="submit">Record event</button>
+        </form>
+      </div>
     </div>
-  </aside>
-</div>
+  {% endif %}
+
+  {% if sources %}
+    <div class="section-head"><h2>Recent notes</h2></div>
+    <div class="doc-list">
+      {% for s in sources %}
+        <div class="doc-row">
+          <span class="doc-name">{{ s.filename }}</span>
+          <span class="doc-when">
+            {{ s.status }}{% if s.event_count %} · {{ s.event_count }} event(s){% endif %}
+          </span>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
 {% endblock %}

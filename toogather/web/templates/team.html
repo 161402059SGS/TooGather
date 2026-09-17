@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Team | {{ project.name }}{% endblock %}
+
+{% block content %}
+  <nav class="breadcrumb" aria-label="Breadcrumb">
+    <a href="/projects/{{ project.id }}">{{ project.name }}</a>
+    <span class="sep">/</span>
+    <span>Team</span>
+  </nav>
+
+  <h1>Team</h1>
+  <p class="lead">Who is in {{ project.name }}, and what each of them may do.</p>
+
+  <div class="section-head"><h2>Members</h2></div>
+  <div class="card">
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Role</th>
+          <th scope="col">Joined</th>
+          {% if is_owner %}<th scope="col"><span class="visually-hidden">Actions</span></th>{% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in members %}
+          <tr>
+            <td>
+              <span class="avatar" aria-hidden="true">{{ m.display_name[:1] | upper }}</span>
+              {{ m.display_name }}
+              {% if m.id == user.id %}<span class="faint small">(you)</span>{% endif %}
+            </td>
+            <td><span class="badge {{ m.role }}">{{ m.role }}</span></td>
+            <td class="small faint">{{ m.added_at.strftime('%d %b %Y') }}</td>
+            {% if is_owner %}
+              <td>
+                {#- Owners can change anyone's role, including their own. The
+                    server refuses the change that would leave no owner. -#}
+                <form class="role-form" method="post"
+                      action="/projects/{{ project.id }}/members/{{ m.id }}/role">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <label class="visually-hidden" for="role-{{ m.id }}">
+                    Role for {{ m.display_name }}
+                  </label>
+                  <select id="role-{{ m.id }}" name="role">
+                    {% for r in roles %}
+                      <option value="{{ r }}" {% if r == m.role %}selected{% endif %}>{{ r }}</option>
+                    {% endfor %}
+                    <option value="remove">remove…</option>
+                  </select>
+                  <button class="secondary" type="submit">Apply</button>
+                </form>
+              </td>
+            {% endif %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section-head"><h2>What each role may do</h2></div>
+  <div class="card role-legend">
+    <div><strong>Owner</strong> — everything a member can, plus managing people, invites and settings.</div>
+    <div><strong>Member</strong> — create folders and documents, upload notes, confirm or reject proposals.</div>
+    <div><strong>Viewer</strong> — read everything in the project, change nothing.</div>
+  </div>
+
+  {% if is_owner %}
+    <div class="section-head"><h2>Invite links</h2></div>
+    <p class="muted small">
+      Anyone who opens a link joins at the role it carries. Send it the way you
+      would send a meeting link, and revoke it when the person is in.
+    </p>
+
+    <div class="card">
+      <form method="post" action="/projects/{{ project.id }}/invites">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <div class="grid grid-3">
+          <div class="field">
+            <label for="role">Role</label>
+            <select id="role" name="role">
+              {% for r in roles %}
+                <option value="{{ r }}" {% if r == 'member' %}selected{% endif %}>{{ r }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="field">
+            <label for="label">Label</label>
+            <input id="label" name="label" type="text" maxlength="80"
+                   placeholder="e.g. Client IT team">
+          </div>
+          <div class="field">
+            <label for="max_uses">Max uses</label>
+            <input id="max_uses" name="max_uses" type="number" min="1" placeholder="unlimited">
+          </div>
+        </div>
+        <button type="submit">Create invite link</button>
+      </form>
+    </div>
+
+    {% for i in invites %}
+      <div class="card">
+        <div class="btn-row">
+          <span class="badge {{ i.role }}">{{ i.role }}</span>
+          {% if i.label %}<strong>{{ i.label }}</strong>{% endif %}
+          <span class="small faint">
+            used {{ i.uses }}{% if i.max_uses %} of {{ i.max_uses }}{% else %} time{{ '' if i.uses == 1 else 's' }}{% endif %}
+          </span>
+          <form class="inline-form" method="post"
+                action="/projects/{{ project.id }}/invites/{{ i.id }}/revoke">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <button class="ghost" type="submit">Revoke</button>
+          </form>
+        </div>
+        <code class="invite-code">{{ base_url }}/join/{{ i.code }}</code>
+      </div>
+    {% else %}
+      <div class="empty">No active invite links.</div>
+    {% endfor %}
+  {% endif %}
+{% endblock %}

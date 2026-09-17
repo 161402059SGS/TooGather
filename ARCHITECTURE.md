@@ -43,8 +43,10 @@ flowchart TD
 
 | Component | Code | Responsibility |
 |---|---|---|
-| Web app | `toogather/web/app.py`, `templates/` | Sign-in, projects, uploads, review, search, settings |
-| REST API | `toogather/web/app.py` (section 7) | Token-authenticated access for the MCP bridge and scripts |
+| Web app | `toogather/web/app.py`, `templates/` | Joining, projects, folders, documents, team, uploads, review, settings |
+| REST API | `toogather/web/app.py` (section 9) | Token-authenticated access for the MCP bridge and scripts |
+| Workspace setup | `toogather/workspace.py` | Seeds a new project's folders, charter and `SKILL.md`; slugs and invite codes |
+| Markdown | `toogather/web/markdown.py` | Renders document Markdown with raw HTML disabled |
 | Worker | `toogather/worker.py` | Processes uploads, calls the AI endpoint, sends digests |
 | Extraction | `toogather/extraction.py` | Prompting, chunking, and validating AI output |
 | Drift rules | `toogather/drift.py` | Pure functions that find forgotten items |
@@ -52,12 +54,33 @@ flowchart TD
 | Vocabulary | `toogather/models.py` | Event types, statuses, roles, allowed transitions |
 | MCP bridge | `toogather/mcp_server.py` | Exposes the API as MCP tools over stdio |
 
+## Identity and access
+
+There are no passwords. A visitor types a display name once; that creates a
+`users` row with `email` and `password_hash` NULL, and a signed session cookie
+carries the user id from then on. Everything else about access is unchanged:
+
+- `project_members` maps a user to a project with one of `owner`, `member`, `viewer`.
+- Every project route calls `load_project(...)` with the minimum role it needs.
+- No access at all returns **404**, not 403, so a project's existence is not revealed.
+- Access at too low a role returns **403** with a message naming the role required.
+- An invite link is a row in `invites` holding a project, a role, and a random code.
+  Opening it inserts the membership; an existing member keeps their current role.
+
+The trade-off is explicit: anyone who can reach the server can claim any name.
+This is a tool for a team on a trusted network, not a public service. Put real
+authentication in front of it before exposing it to the internet.
+
 ## Data model
 
 ```mermaid
 erDiagram
     users ||--o{ project_members : "belongs to"
     projects ||--o{ project_members : has
+    projects ||--o{ invites : "grants a role via"
+    projects ||--o{ folders : has
+    folders ||--o{ documents : holds
+    projects ||--o{ documents : "charter and SKILL.md"
     projects ||--o{ sources : has
     projects ||--o{ events : has
     sources |o--o{ events : "suggested from"

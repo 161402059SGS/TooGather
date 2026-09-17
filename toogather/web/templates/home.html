@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Home | TooGather{% endblock %}
+{% block page_class %}home{% endblock %}
+
+{#- The landing page. One question, one box. Naming the thing you are
+    building is how a project starts here, so the composer comes first and
+    the list of existing projects sits underneath it. -#}
+{% block content %}
+  <h1 class="home-greeting">What are you building, {{ user.display_name.split(' ')[0] }}?</h1>
+  <p class="home-sub">
+    Name it and TooGather sets up the folders, a charter to fill in, and a
+    SKILL.md your AI agents can read.
+  </p>
+
+  <form method="post" action="/projects/new">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <div class="composer">
+      <label class="visually-hidden" for="name">Project name</label>
+      <textarea id="name" name="name" rows="1" required autofocus maxlength="120"
+                placeholder="A new warehouse system for the Surabaya plant…"></textarea>
+      <div class="composer-row">
+        <label class="visually-hidden" for="description">One-line description</label>
+        <input id="description" name="description" type="text" maxlength="300"
+               placeholder="Add a one-line description (optional)">
+        <button type="submit" title="Create project" aria-label="Create project">→</button>
+      </div>
+    </div>
+  </form>
+
+  {% if projects %}
+    <div class="home-projects">
+      <div class="section-head">
+        <h2>Your projects</h2>
+        <span class="small faint">{{ projects | length }}</span>
+      </div>
+      <div class="grid grid-2">
+        {% for p in projects %}
+          <a class="tile" href="/projects/{{ p.id }}">
+            <span class="tile-title">
+              {{ p.name }}
+              <span class="badge {{ p.my_role }}">{{ p.my_role }}</span>
+            </span>
+            {% if p.description %}
+              <span class="tile-desc">{{ p.description }}</span>
+            {% endif %}
+          </a>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}

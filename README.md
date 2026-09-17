@@ -58,9 +58,39 @@ Then start it:
 docker compose up -d
 ```
 
-Open `http://localhost:8080` (or your `BASE_URL`). The first screen creates the admin account.
+Open `http://localhost:8080` (or your `BASE_URL`). Type your name once and you are in — there is no password to set up. Name the project you are working on and TooGather creates it with four folders, a charter to fill in, and a `SKILL.md` for your AI agents.
 
 To try it quickly, create a project and upload `sample_data/sample-mom-weekly-sync.md`.
+
+### A project is a workspace
+
+Each project holds four folders out of the box, plus any you add:
+
+| Folder | What belongs in it |
+|---|---|
+| Code Context | How the system is put together: modules, data flow, why it is shaped this way. |
+| Code Documentation | How to use it: setup, APIs, commands, examples. |
+| Technical | Infrastructure, deployment, environments, runbooks. |
+| Minutes of Meeting | What was discussed and agreed, meeting by meeting. |
+
+Two documents sit outside the folders and belong to the project itself:
+
+- **Project charter** — what you are trying to achieve, what "done" looks like, what is out of scope.
+- **`SKILL.md`** — what an AI agent should read before working on this project. Download it from the project page and drop it next to your code, or point an agent at `/projects/<id>/skill.md`.
+
+Everything is Markdown, and it is stored as Markdown, so it survives a copy‑paste into a repo.
+
+### Inviting your team
+
+Open **Team** in any project you own, pick a role, and create an invite link. Whoever opens it joins at that role.
+
+| Role | Can |
+|---|---|
+| Owner | Everything a member can, plus managing people, invites and settings. |
+| Member | Create folders and documents, upload notes, confirm or reject proposals. |
+| Viewer | Read everything, change nothing. |
+
+A project always keeps at least one owner: the server refuses the change that would leave it with none.
 
 ### Upgrading
 
@@ -173,11 +203,12 @@ This writes an encrypted file under `backups/`. Copy it off the server regularly
 Honest list, so you can decide whether it fits:
 
 - Uploads are text only (`.txt`, `.md`, `.vtt`, `.srt`, `.csv`). For Word or PDF, paste the text.
-- No password reset by email yet; an admin creates accounts.
+- **There are no passwords.** Anyone who can reach the server can claim any name and join any project whose invite link they hold. That is deliberate for a team tool on a trusted network — run it on your LAN or behind a VPN, and put real authentication in front of it before exposing it to the internet.
+- Documents are edited as raw Markdown in a textarea. There is no rich-text editor, and no live preview yet.
+- Documents have no version history. Events do; documents are last-write-wins, so two people editing the same page at once will overwrite each other.
 - AI provider settings apply to the whole installation. Per-project providers are planned.
 - No automatic connectors yet (git, email, WhatsApp). Use the upload form or the API.
 - Search is keyword full-text search, not semantic search.
-- The login throttle is in memory and resets when the app restarts.
 
 See [ROADMAP.md](ROADMAP.md) for what comes next.
 

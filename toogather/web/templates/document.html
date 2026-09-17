@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{{ document.title }} | {{ project.name }}{% endblock %}
+
+{#- Two states of the same page: reading (rendered Markdown) and editing
+    (a plain textarea). A textarea is deliberate - the people writing these
+    are engineers, Markdown is the source of truth, and SKILL.md has to
+    survive a round trip byte for byte. -#}
+{% block content %}
+  <nav class="breadcrumb" aria-label="Breadcrumb">
+    <a href="/projects/{{ project.id }}">{{ project.name }}</a>
+    <span class="sep">/</span>
+    {% if folder %}
+      <a href="/projects/{{ project.id }}/folders/{{ folder.id }}">{{ folder.name }}</a>
+      <span class="sep">/</span>
+    {% elif document.doc_kind != 'note' %}
+      <span>{{ 'Charter' if document.doc_kind == 'charter' else 'Agent skill' }}</span>
+      <span class="sep">/</span>
+    {% endif %}
+    <span>{{ document.title }}</span>
+  </nav>
+
+  {% if editing %}
+    <form method="post" action="/documents/{{ document.id }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label class="visually-hidden" for="title">Title</label>
+      <input class="editor-title" id="title" name="title" type="text"
+             required maxlength="200" value="{{ document.title }}">
+      <label class="visually-hidden" for="body">Markdown</label>
+      <textarea class="editor-body" id="body" name="body"
+                spellcheck="false">{{ document.body }}</textarea>
+      <div class="editor-bar">
+        <button type="submit">Save</button>
+        <a class="btn secondary" href="/documents/{{ document.id }}">Cancel</a>
+        <span class="spacer"></span>
+        <span class="small faint">Markdown. Raw HTML is shown as text, not run.</span>
+      </div>
+    </form>
+  {% else %}
+    <div class="doc-head">
+      <h1>{{ document.title }}</h1>
+      <div class="btn-row">
+        {% if document.doc_kind == 'skill' %}
+          <a class="btn secondary" href="/projects/{{ project.id }}/skill.md">Download</a>
+        {% endif %}
+        {% if can_edit %}
+          <a class="btn" href="/documents/{{ document.id }}?edit=1">Edit</a>
+        {% endif %}
+      </div>
+    </div>
+
+    <p class="doc-meta">
+      Updated {{ document.updated_at.strftime('%d %b %Y at %H:%M') }}
+      {%- if document.doc_kind == 'skill' %} · point your AI agent at this file
+      {%- elif document.doc_kind == 'charter' %} · what this project is for
+      {%- endif %}
+    </p>
+
+    {% if document.body.strip() %}
+      <article class="prose">{{ document.body | markdown }}</article>
+    {% else %}
+      <div class="empty">
+        This document is empty.
+        {% if can_edit %}Choose Edit to start writing.{% endif %}
+      </div>
+    {% endif %}
+
+    {% if can_edit and document.doc_kind == 'note' %}
+      <div class="section-head"><h2>Danger zone</h2></div>
+      <form method="post" action="/documents/{{ document.id }}/delete">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <button class="danger" type="submit">Delete this document</button>
+      </form>
+    {% endif %}
+  {% endif %}
+{% endblock %}

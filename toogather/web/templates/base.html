@@ -1,39 +1,128 @@
-{#- Base layout. Every page extends this. The CSRF token is sent with every
-    HTMX request through hx-headers, and every normal form includes it too. -#}
+{#- The app shell: sidebar on the left, one content column on the right.
+
+    Pages that have no sidebar (the name prompt, errors seen while signed
+    out) set `bare` to true and get a centred card instead.
+
+    The CSRF token rides on every HTMX request via hx-headers, and every
+    ordinary form carries it in a hidden field. -#}
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  {#- includeIndicatorStyles off: htmx would otherwise inject an inline style,
-      which our Content-Security-Policy blocks. -#}
+  {#- includeIndicatorStyles off: htmx would otherwise inject an inline
+      style, which our Content-Security-Policy blocks. -#}
   <meta name="htmx-config" content='{"includeIndicatorStyles": false}'>
   <title>{% block title %}TooGather{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/htmx.min.js" defer></script>
 </head>
 <body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
-  <header class="topbar">
-    <a class="brand" href="/">TooGather</a>
-    {% if user %}
-    <nav aria-label="Main">
-      <a href="/">Projects</a>
-      {% if user.is_admin %}<a href="/admin/users">People</a>{% endif %}
-      <a href="/account/tokens">API tokens</a>
-    </nav>
-    <span class="spacer"></span>
-    <span class="muted small">{{ user.display_name }}</span>
-    <form method="post" action="/logout">
-      <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <button class="secondary" type="submit">Sign out</button>
-    </form>
-    {% endif %}
-  </header>
-  <main>
-    {% for f in flashes %}
-      <div class="flash {{ f.kind }}" role="status">{{ f.message }}</div>
-    {% endfor %}
-    {% block content %}{% endblock %}
-  </main>
+
+{#- Not every page inside a project passes its folder list (Review and
+    Settings do not need it for their own content), but the sidebar always
+    renders. Defaulting here keeps those pages from raising on an undefined
+    name, and an Undefined value is falsy so `or []` is the whole guard. -#}
+{% set folders = folders or [] %}
+
+{% if bare or not user %}
+  <div class="centered">
+    <div class="centered-card">
+      {% for f in flashes %}
+        <div class="flash {{ f.kind }}" role="status">{{ f.message }}</div>
+      {% endfor %}
+      {% block bare_content %}{% endblock %}
+    </div>
+  </div>
+{% else %}
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="sidebar-brand" href="/">
+        <span class="sidebar-mark" aria-hidden="true">TG</span>
+        <span>TooGather</span>
+      </a>
+
+      <a class="nav-item {% if not project %}is-active{% endif %}" href="/">
+        <span class="nav-icon" aria-hidden="true">✳</span>
+        <span class="nav-text">Home</span>
+      </a>
+
+      {#- When a project is open, its folders expand underneath it. Other
+          projects stay collapsed so the sidebar does not become a wall. -#}
+      <div class="nav-label">Projects</div>
+      {% for p in nav_projects %}
+        {% set is_current = project and p.id == project.id %}
+        <a class="nav-item {% if is_current %}is-active{% endif %}" href="/projects/{{ p.id }}">
+          <span class="nav-icon" aria-hidden="true">{% if is_current %}▾{% else %}▸{% endif %}</span>
+          <span class="nav-text">{{ p.name }}</span>
+        </a>
+
+        {% if is_current %}
+          <div class="nav-sub">
+            {% for f in folders %}
+              <a class="nav-item {% if folder and folder.id == f.id %}is-active{% endif %}"
+                 href="/projects/{{ project.id }}/folders/{{ f.id }}">
+                <span class="nav-icon" aria-hidden="true">
+                  {%- if f.kind == 'code_context' %}◈
+                  {%- elif f.kind == 'code_documentation' %}◉
+                  {%- elif f.kind == 'technical' %}⚙
+                  {%- elif f.kind == 'mom' %}🗓
+                  {%- else %}▪{% endif -%}
+                </span>
+                <span class="nav-text">{{ f.name }}</span>
+                {% if f.doc_count %}<span class="nav-count">{{ f.doc_count }}</span>{% endif %}
+              </a>
+            {% endfor %}
+            <a class="nav-item" href="/projects/{{ project.id }}/team">
+              <span class="nav-icon" aria-hidden="true">◍</span>
+              <span class="nav-text">Team</span>
+            </a>
+            <a class="nav-item" href="/projects/{{ project.id }}/review">
+              <span class="nav-icon" aria-hidden="true">◎</span>
+              <span class="nav-text">Review</span>
+            </a>
+            <a class="nav-item" href="/projects/{{ project.id }}/settings">
+              <span class="nav-icon" aria-hidden="true">⚙</span>
+              <span class="nav-text">Settings</span>
+            </a>
+          </div>
+        {% endif %}
+      {% else %}
+        <span class="nav-item faint">No projects yet</span>
+      {% endfor %}
+
+      <div class="nav-label">Account</div>
+      <a class="nav-item" href="/account/tokens">
+        <span class="nav-icon" aria-hidden="true">⚿</span>
+        <span class="nav-text">API tokens</span>
+      </a>
+      {% if user.is_admin %}
+        <a class="nav-item" href="/admin/users">
+          <span class="nav-icon" aria-hidden="true">◐</span>
+          <span class="nav-text">People</span>
+        </a>
+      {% endif %}
+
+      <div class="sidebar-foot">
+        <span class="avatar" aria-hidden="true">{{ user.display_name[:1] | upper }}</span>
+        <span class="nav-text">{{ user.display_name }}</span>
+        <form method="post" action="/logout">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <button class="linklike" type="submit">Sign out</button>
+        </form>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="{% block page_class %}page{% endblock %}">
+        {% for f in flashes %}
+          <div class="flash {{ f.kind }}" role="status">{{ f.message }}</div>
+        {% endfor %}
+        {% block content %}{% endblock %}
+      </div>
+    </main>
+  </div>
+{% endif %}
+
 </body>
 </html>

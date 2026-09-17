@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from datetime import date
+from datetime import UTC, date, datetime
 
 from toogather import db
 from toogather.models import EventStatus, ProposedEvent, Role
@@ -121,7 +121,7 @@ def set_ai_extraction(project_id: str, enabled: bool) -> None:
 def list_members(project_id: str) -> list[dict]:
     return db.fetch_all(
         """
-        SELECT u.id, u.email, u.display_name, m.role
+        SELECT u.id, u.email, u.display_name, m.role, m.added_at
         FROM project_members m
         JOIN users u ON u.id = m.user_id
         WHERE m.project_id = %s
@@ -498,3 +498,267 @@ def project_digest_recipients(project_id: str) -> list[dict]:
         """,
         (project_id,),
     )
+
+
+# =====================================================================
+# Identity without passwords
+# =====================================================================
+
+
+def create_named_user(display_name: str, is_admin: bool) -> dict:
+    """
+    Create a user who has only a display name.
+
+    No email, no password: people join by typing a name once and are
+    remembered by their session cookie. Roles still attach to this row, so
+    permissions are enforced exactly as they are for a password account.
+    """
+    return db.fetch_one(
+        """
+        INSERT INTO users (email, display_name, password_hash, is_admin)
+        VALUES (NULL, %s, NULL, %s)
+        RETURNING *
+        """,
+        (display_name.strip(), is_admin),
+    )
+
+
+# =====================================================================
+# Folders
+# =====================================================================
+
+# The four drawers every new project starts with. Order here is the order
+# they appear in the sidebar.
+DEFAULT_FOLDERS: list[dict] = [
+    {
+        "name": "Code Context",
+        "slug": "code-context",
+        "kind": "code_context",
+        "description": "How the system is put together: modules, data flow, why it is shaped this way.",
+    },
+    {
+        "name": "Code Documentation",
+        "slug": "code-documentation",
+        "kind": "code_documentation",
+        "description": "How to use it: setup, APIs, commands, examples.",
+    },
+    {
+        "name": "Technical",
+        "slug": "technical",
+        "kind": "technical",
+        "description": "Infrastructure, deployment, environments, operational runbooks.",
+    },
+    {
+        "name": "Minutes of Meeting",
+        "slug": "mom",
+        "kind": "mom",
+        "description": "What was discussed and agreed, meeting by meeting.",
+    },
+]
+
+
+def create_folder(project_id: str, name: str, slug: str, kind: str,
+                  description: str, position: int, created_by: str | None) -> dict:
+    return db.fetch_one(
+        """
+        INSERT INTO folders (project_id, name, slug, kind, description, position, created_by)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (project_id, name.strip(), slug, kind, description.strip(), position, created_by),
+    )
+
+
+def list_folders(project_id: str) -> list[dict]:
+    """Folders with a live document count, for the sidebar."""
+    return db.fetch_all(
+        """
+        SELECT f.*, count(d.id) AS doc_count
+        FROM folders f
+        LEFT JOIN documents d ON d.folder_id = f.id
+        WHERE f.project_id = %s
+        GROUP BY f.id
+        ORDER BY f.position, f.name
+        """,
+        (project_id,),
+    )
+
+
+def get_folder(folder_id: str) -> dict | None:
+    return db.fetch_one("SELECT * FROM folders WHERE id = %s", (folder_id,))
+
+
+def delete_folder(folder_id: str) -> None:
+    """Documents inside go with it (ON DELETE CASCADE)."""
+    db.execute("DELETE FROM folders WHERE id = %s", (folder_id,))
+
+
+def next_folder_position(project_id: str) -> int:
+    row = db.fetch_one(
+        "SELECT coalesce(max(position), 0) + 1 AS n FROM folders WHERE project_id = %s",
+        (project_id,),
+    )
+    return int(row["n"]) if row else 100
+
+
+def slug_is_taken(project_id: str, slug: str) -> bool:
+    return db.fetch_one(
+        "SELECT 1 AS x FROM folders WHERE project_id = %s AND slug = %s",
+        (project_id, slug),
+    ) is not None
+
+
+# =====================================================================
+# Documents
+# =====================================================================
+
+
+def create_document(project_id: str, folder_id: str | None, title: str,
+                    body: str, doc_kind: str, created_by: str | None) -> dict:
+    return db.fetch_one(
+        """
+        INSERT INTO documents (project_id, folder_id, title, body, doc_kind,
+                               created_by, updated_by)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (project_id, folder_id, title.strip(), body, doc_kind, created_by, created_by),
+    )
+
+
+def get_document(document_id: str) -> dict | None:
+    return db.fetch_one("SELECT * FROM documents WHERE id = %s", (document_id,))
+
+
+def list_documents(folder_id: str) -> list[dict]:
+    return db.fetch_all(
+        """
+        SELECT id, title, doc_kind, updated_at
+        FROM documents WHERE folder_id = %s
+        ORDER BY updated_at DESC
+        """,
+        (folder_id,),
+    )
+
+
+def update_document(document_id: str, title: str, body: str, updated_by: str | None) -> None:
+    db.execute(
+        """
+        UPDATE documents
+        SET title = %s, body = %s, updated_by = %s, updated_at = now()
+        WHERE id = %s
+        """,
+        (title.strip(), body, updated_by, document_id),
+    )
+
+
+def delete_document(document_id: str) -> None:
+    db.execute("DELETE FROM documents WHERE id = %s", (document_id,))
+
+
+def get_special_document(project_id: str, doc_kind: str) -> dict | None:
+    """Fetch the project's single charter or skill document."""
+    return db.fetch_one(
+        "SELECT * FROM documents WHERE project_id = %s AND doc_kind = %s",
+        (project_id, doc_kind),
+    )
+
+
+def recent_documents(project_id: str, limit: int = 8) -> list[dict]:
+    return db.fetch_all(
+        """
+        SELECT d.id, d.title, d.doc_kind, d.updated_at, f.name AS folder_name
+        FROM documents d LEFT JOIN folders f ON f.id = d.folder_id
+        WHERE d.project_id = %s
+        ORDER BY d.updated_at DESC
+        LIMIT %s
+        """,
+        (project_id, limit),
+    )
+
+
+def search_documents(project_id: str, query: str, limit: int = 20) -> list[dict]:
+    return db.fetch_all(
+        """
+        SELECT d.id, d.title, d.doc_kind, d.updated_at, f.name AS folder_name
+        FROM documents d LEFT JOIN folders f ON f.id = d.folder_id
+        WHERE d.project_id = %s
+          AND d.search @@ plainto_tsquery('simple', %s)
+        ORDER BY ts_rank(d.search, plainto_tsquery('simple', %s)) DESC
+        LIMIT %s
+        """,
+        (project_id, query, query, limit),
+    )
+
+
+# =====================================================================
+# Invites
+# =====================================================================
+
+
+def create_invite(project_id: str, code: str, role: str, label: str,
+                  max_uses: int | None, created_by: str | None) -> dict:
+    return db.fetch_one(
+        """
+        INSERT INTO invites (project_id, code, role, label, max_uses, created_by)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (project_id, code, role, label.strip(), max_uses, created_by),
+    )
+
+
+def list_invites(project_id: str) -> list[dict]:
+    return db.fetch_all(
+        """
+        SELECT * FROM invites
+        WHERE project_id = %s AND revoked_at IS NULL
+        ORDER BY created_at DESC
+        """,
+        (project_id,),
+    )
+
+
+def get_invite_by_code(code: str) -> dict | None:
+    return db.fetch_one("SELECT * FROM invites WHERE code = %s", (code,))
+
+
+def revoke_invite(invite_id: str, project_id: str) -> None:
+    """project_id is in the WHERE clause so one project cannot revoke another's invite."""
+    db.execute(
+        "UPDATE invites SET revoked_at = now() WHERE id = %s AND project_id = %s",
+        (invite_id, project_id),
+    )
+
+
+def accept_invite(invite: dict, user_id: str) -> None:
+    """
+    Add the user to the project at the invite's role and count the use.
+
+    Both statements run in one transaction so a half-accepted invite cannot
+    exist. An existing member keeps their current role rather than being
+    silently downgraded by re-opening an old link.
+    """
+    with db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO project_members (project_id, user_id, role)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (project_id, user_id) DO NOTHING
+            """,
+            (invite["project_id"], user_id, invite["role"]),
+        )
+        conn.execute("UPDATE invites SET uses = uses + 1 WHERE id = %s", (invite["id"],))
+
+
+def invite_problem(invite: dict | None) -> str | None:
+    """Return why an invite cannot be used, or None if it is good."""
+    if invite is None:
+        return "That invite link is not valid."
+    if invite["revoked_at"] is not None:
+        return "That invite has been revoked."
+    if invite["expires_at"] is not None and invite["expires_at"] < datetime.now(UTC):
+        return "That invite has expired."
+    if invite["max_uses"] is not None and invite["uses"] >= invite["max_uses"]:
+        return "That invite has already been used the maximum number of times."
+    return None

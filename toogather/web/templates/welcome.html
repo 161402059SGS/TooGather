@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% set bare = true %}
+{% block title %}Welcome | TooGather{% endblock %}
+
+{#- Asked once per browser. There is no password: the name is what the
+    team sees next to the things you write, and what project roles
+    attach to. -#}
+{% block bare_content %}
+  <div class="card">
+    <h1>Hello</h1>
+    <p class="lead">
+      TooGather keeps what your team decided, promised, changed and is still
+      asking. Tell us what to call you and you are in.
+    </p>
+
+    {% if error %}<div class="flash error" role="alert">{{ error }}</div>{% endif %}
+
+    <form method="post" action="/welcome">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="hidden" name="next" value="{{ next }}">
+      <div class="field">
+        <label for="display_name">Your name</label>
+        <input id="display_name" name="display_name" type="text" required autofocus
+               maxlength="60" autocomplete="name" placeholder="e.g. Sahat"
+               value="{{ display_name or '' }}">
+        <p class="hint">Shown beside everything you write. You can be a first name.</p>
+      </div>
+      <button type="submit">Continue</button>
+    </form>
+  </div>
+
+  <p class="small faint">
+    No password. Anyone who can reach this server can join, so run it where
+    only your team can.
+  </p>
+{% endblock %}

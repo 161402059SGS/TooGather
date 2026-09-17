@@ -4,29 +4,36 @@ The TooGather web application and REST API.
 Layout of this file (search for the banner comments):
   1. Setup: settings, database, templates, middleware
   2. Helpers: current user, CSRF, flash messages, project access
-  3. First-run setup and login
-  4. Projects: list, create, overview, upload, add event
-  5. Review and event detail
-  6. Project settings, users, API tokens
-  7. REST API (used by the MCP bridge and scripts)
-  8. Entry point
+  3. Joining: name on first visit, invite links
+  4. Projects: home, create, overview, upload, add event
+  5. Folders and documents
+  6. Team and roles
+  7. Review and event detail
+  8. Project settings, users, API tokens
+  9. REST API (used by the MCP bridge and scripts)
+ 10. Entry point
 
-Security model in one paragraph: people sign in with email + password and get
-a signed session cookie. Every form POST must carry a CSRF token. Every
-project page checks the user's role in that project; a project the user
-cannot access returns 404 so its existence is not revealed. API calls use
-personal tokens and are written to the audit log.
+Security model in one paragraph: there is no password. A visitor types a
+display name once and gets a signed session cookie that identifies them from
+then on; that identity is what roles attach to. Every form POST must carry a
+CSRF token. Every project page checks the user's role in that project, and a
+project the user cannot access returns 404 so its existence is not revealed.
+API calls use personal tokens and are written to the audit log.
+
+What that trades away, stated plainly: anyone who reaches this server can
+claim any name and join any project they hold an invite link for. That is the
+intended model for a team tool on a trusted network. Do not expose this
+directly to the internet without putting authentication in front of it.
 """
 
 from __future__ import annotations
 
 import logging
-import time
 import uuid
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -35,7 +42,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
-from toogather import __version__, db, repo, security
+from toogather import __version__, db, repo, security, workspace
 from toogather.config import load_settings, require_secure_secret
 from toogather.models import (
     EVENT_TYPE_LABELS,
@@ -45,6 +52,7 @@ from toogather.models import (
     can_change_status,
 )
 from toogather.services import project_brief, project_findings
+from toogather.web.markdown import first_paragraph, render_markdown
 
 log = logging.getLogger("toogather.web")
 
@@ -90,6 +98,8 @@ templates.env.globals.update(
     EVENT_STATUSES=[s.value for s in EventStatus],
     version=__version__,
 )
+templates.env.filters["markdown"] = render_markdown
+templates.env.filters["preview"] = first_paragraph
 
 
 @app.middleware("http")
@@ -113,7 +123,7 @@ async def security_headers(request: Request, call_next):
 
 
 class Redirect(Exception):
-    """Raise to send the browser somewhere else, e.g. to the login page."""
+    """Raise to send the browser somewhere else, e.g. to the name prompt."""
 
     def __init__(self, url: str):
         self.url = url
@@ -142,11 +152,15 @@ def current_user(request: Request) -> dict | None:
 
 
 def require_user(request: Request) -> dict:
+    """
+    The visitor, or a redirect to the one-time name prompt.
+
+    `next` carries where they were heading so an invite link still lands on
+    the right project after they introduce themselves.
+    """
     user = current_user(request)
     if user is None:
-        if repo.count_users() == 0:
-            raise Redirect("/setup")
-        raise Redirect("/login")
+        raise Redirect(f"/welcome?next={quote(request.url.path, safe='')}")
     return user
 
 
@@ -169,11 +183,18 @@ def flash(request: Request, message: str, kind: str = "info") -> None:
 
 
 def _base_context(request: Request) -> dict:
-    """Values every template can use."""
+    """
+    Values every template can use.
+
+    `nav_projects` feeds the sidebar, which is on every signed-in page, so it
+    is fetched here rather than remembered by each route.
+    """
+    user = current_user(request)
     return {
-        "user": current_user(request),
+        "user": user,
         "csrf_token": csrf_token(request),
         "flashes": request.session.pop("flash", []),
+        "nav_projects": repo.list_projects_for_user(user) if user else [],
     }
 
 
@@ -208,27 +229,8 @@ def parse_date(value: str | None) -> date | None:
         return None
 
 
-# Very small in-memory login throttle: 5 failed attempts per email+IP locks
-# that pair for 5 minutes. Good enough for an office install; put a reverse
-# proxy with rate limiting in front for internet-facing installs.
-_failed_logins: dict[str, list[float]] = defaultdict(list)
-LOGIN_MAX_FAILURES = 5
-LOGIN_LOCK_SECONDS = 300
-
-
-def _login_key(request: Request, email: str) -> str:
-    client = request.client.host if request.client else "unknown"
-    return f"{email.strip().lower()}|{client}"
-
-
-def _login_locked(key: str) -> bool:
-    now = time.monotonic()
-    _failed_logins[key] = [t for t in _failed_logins[key] if now - t < LOGIN_LOCK_SECONDS]
-    return len(_failed_logins[key]) >= LOGIN_MAX_FAILURES
-
-
 # =====================================================================
-# 3. First-run setup and login
+# 3. Joining
 # =====================================================================
 
 
@@ -249,63 +251,92 @@ def health():
     }
 
 
-@app.get("/setup")
-def setup_page(request: Request):
-    if repo.count_users() > 0:
-        raise Redirect("/login")
-    return render(request, "setup.html")
+MAX_DISPLAY_NAME = 60
 
 
-@app.post("/setup")
-def setup_submit(request: Request, display_name: str = Form(...), email: str = Form(...),
-                 password: str = Form(...), csrf: str = Form("")):
+def safe_next(target: str | None) -> str:
+    """
+    Where to send someone after they introduce themselves.
+
+    Only same-site paths are allowed. Anything absolute, protocol-relative, or
+    empty falls back to the home page, so a crafted ?next= cannot bounce a
+    visitor to another site.
+    """
+    if not target or not target.startswith("/") or target.startswith("//"):
+        return "/"
+    return target
+
+
+@app.get("/welcome")
+def welcome_page(request: Request, next: str = "/"):
+    """Asked once. Returning visitors have a cookie and never see this."""
+    if current_user(request) is not None:
+        raise Redirect(safe_next(next))
+    return render(request, "welcome.html", next=safe_next(next))
+
+
+@app.post("/welcome")
+def welcome_submit(request: Request, display_name: str = Form(...),
+                   next: str = Form("/"), csrf: str = Form("")):
     check_csrf(request, csrf)
-    # Checked again here so nobody can create a second admin through /setup.
-    if repo.count_users() > 0:
-        raise Redirect("/login")
-    problem = security.password_problem(password)
-    if problem:
-        return render(request, "setup.html", status_code=400, error=problem,
-                      display_name=display_name, email=email)
-    user = repo.create_user(email, display_name, security.hash_password(password), is_admin=True)
-    request.session.clear()
+    destination = safe_next(next)
+    name = display_name.strip()
+    if not name:
+        return render(request, "welcome.html", status_code=400, next=destination,
+                      error="Type a name so your team knows who did what.")
+    if len(name) > MAX_DISPLAY_NAME:
+        return render(request, "welcome.html", status_code=400, next=destination,
+                      error=f"Keep it under {MAX_DISPLAY_NAME} characters.",
+                      display_name=name)
+
+    # The first person through the door administers the install. After that,
+    # everyone is an ordinary user and gets their rights from project roles.
+    is_first = repo.count_users() == 0
+    user = repo.create_named_user(name, is_admin=is_first)
+    request.session.clear()      # a fresh session prevents session fixation
     request.session["user_id"] = str(user["id"])
-    flash(request, "Your admin account is ready. Create your first project.")
-    return RedirectResponse("/projects/new", status_code=303)
-
-
-@app.get("/login")
-def login_page(request: Request):
-    if repo.count_users() == 0:
-        raise Redirect("/setup")
-    return render(request, "login.html")
-
-
-@app.post("/login")
-def login_submit(request: Request, email: str = Form(...), password: str = Form(...),
-                 csrf: str = Form("")):
-    check_csrf(request, csrf)
-    key = _login_key(request, email)
-    if _login_locked(key):
-        return render(request, "login.html", status_code=429, email=email,
-                      error="Too many failed attempts. Try again in 5 minutes.")
-    user = repo.get_user_by_email(email)
-    if user is None or not security.verify_password(user["password_hash"], password):
-        _failed_logins[key].append(time.monotonic())
-        # Same message for unknown email and wrong password: do not reveal which.
-        return render(request, "login.html", status_code=401, email=email,
-                      error="Email or password is incorrect.")
-    _failed_logins.pop(key, None)
-    request.session.clear()   # new session on login prevents session fixation
-    request.session["user_id"] = str(user["id"])
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse(destination, status_code=303)
 
 
 @app.post("/logout")
 def logout(request: Request, csrf: str = Form("")):
+    """
+    Forget this browser.
+
+    The user row stays: their name is attached to events and documents they
+    created, and deleting it would blank out that history.
+    """
     check_csrf(request, csrf)
     request.session.clear()
-    return RedirectResponse("/login", status_code=303)
+    return RedirectResponse("/welcome", status_code=303)
+
+
+@app.get("/join/{code}")
+def join_project(request: Request, code: str):
+    """
+    Open an invite link: join the project at the role the link carries.
+
+    Someone without a session is sent to /welcome first and comes back here.
+    """
+    user = require_user(request)
+    invite = repo.get_invite_by_code(code)
+    problem = repo.invite_problem(invite)
+    if problem:
+        raise StarletteHTTPException(404, problem)
+
+    project = repo.get_project(str(invite["project_id"]))
+    if project is None:
+        raise StarletteHTTPException(404, "That project no longer exists.")
+
+    existing = repo.get_role(str(invite["project_id"]), user)
+    if existing is not None:
+        flash(request, f"You are already in {project['name']} as {existing}.")
+    else:
+        repo.accept_invite(invite, str(user["id"]))
+        repo.audit("invite.accept", user_id=str(user["id"]),
+                   project_id=str(invite["project_id"]), detail={"role": invite["role"]})
+        flash(request, f"You joined {project['name']} as {invite['role']}.")
+    return RedirectResponse(f"/projects/{invite['project_id']}", status_code=303)
 
 
 # =====================================================================
@@ -314,30 +345,37 @@ def logout(request: Request, csrf: str = Form("")):
 
 
 @app.get("/")
-def projects_page(request: Request):
-    user = require_user(request)
-    return render(request, "projects.html", projects=repo.list_projects_for_user(user))
+def home_page(request: Request):
+    """
+    The landing page: one question and a box to answer it in.
 
-
-@app.get("/projects/new")
-def new_project_page(request: Request):
+    Naming the thing you are building is how a project starts here, so the
+    composer is the first thing on the page rather than a list of forms.
+    """
     user = require_user(request)
-    if not user["is_admin"]:
-        raise StarletteHTTPException(403, "Only admins can create projects.")
-    return render(request, "project_new.html")
+    return render(request, "home.html", projects=repo.list_projects_for_user(user))
 
 
 @app.post("/projects/new")
 def new_project_submit(request: Request, name: str = Form(...), description: str = Form(""),
                        csrf: str = Form("")):
+    """
+    Create a project and furnish it.
+
+    Anyone may create one: the creator becomes its owner, and from there the
+    project's own roles decide who can do what. Seeding happens in the same
+    request so the project is never briefly empty.
+    """
     user = require_user(request)
     check_csrf(request, csrf)
-    if not user["is_admin"]:
-        raise StarletteHTTPException(403, "Only admins can create projects.")
     if not name.strip():
-        return render(request, "project_new.html", status_code=400, error="Give the project a name.")
+        flash(request, "Give the project a name first.", "error")
+        return RedirectResponse("/", status_code=303)
+
     project = repo.create_project(name, description, str(user["id"]))
-    flash(request, "Project created. Upload meeting notes or add the first decision.")
+    workspace.seed_project(str(project["id"]), project["name"], str(user["id"]))
+    repo.audit("project.create", user_id=str(user["id"]), project_id=str(project["id"]))
+    flash(request, f"{project['name']} is ready. Start with the charter.")
     return RedirectResponse(f"/projects/{project['id']}", status_code=303)
 
 
@@ -357,6 +395,10 @@ def project_page(request: Request, project_id: uuid.UUID):
         sources=repo.list_sources(pid, limit=8),
         can_edit=ROLE_RANK[role] >= ROLE_RANK[Role.MEMBER.value],
         today=settings.today().isoformat(),
+        folders=repo.list_folders(pid),
+        charter=repo.get_special_document(pid, "charter"),
+        skill_doc=repo.get_special_document(pid, "skill"),
+        recent_docs=repo.recent_documents(pid),
     )
 
 
@@ -426,8 +468,277 @@ def events_page(request: Request, project_id: uuid.UUID, q: str = "", type: str 
                   q=q, type_filter=type_, status_filter=status_)
 
 
+
+
 # =====================================================================
-# 5. Review and event detail
+# 5. Folders and documents
+# =====================================================================
+
+MAX_DOC_BODY = 400_000       # ~400 KB of Markdown; far past any real page
+MAX_TITLE = 200
+MAX_FOLDER_NAME = 80
+
+
+def load_document(document_id: uuid.UUID, user: dict, min_role: str = Role.VIEWER.value):
+    """
+    Return (document, project, role) after checking access on the document's
+    own project. Going through the project keeps one permission rule.
+    """
+    document = repo.get_document(str(document_id))
+    if document is None:
+        raise StarletteHTTPException(404, "Document not found.")
+    project, role = load_project(document["project_id"], user, min_role)
+    return document, project, role
+
+
+@app.get("/projects/{project_id}/folders/{folder_id}")
+def folder_page(request: Request, project_id: uuid.UUID, folder_id: uuid.UUID):
+    user = require_user(request)
+    project, role = load_project(project_id, user)
+    folder = repo.get_folder(str(folder_id))
+    if folder is None or str(folder["project_id"]) != str(project_id):
+        raise StarletteHTTPException(404, "Folder not found.")
+    return render(
+        request, "folder.html",
+        project=project, role=role, folder=folder,
+        documents=repo.list_documents(str(folder_id)),
+        folders=repo.list_folders(str(project_id)),
+        can_edit=ROLE_RANK[role] >= ROLE_RANK[Role.MEMBER.value],
+    )
+
+
+@app.post("/projects/{project_id}/folders")
+def create_folder_submit(request: Request, project_id: uuid.UUID,
+                         name: str = Form(...), description: str = Form(""),
+                         csrf: str = Form("")):
+    """Adding a drawer needs the member role; the four defaults come for free."""
+    user = require_user(request)
+    check_csrf(request, csrf)
+    load_project(project_id, user, Role.MEMBER.value)
+    clean = name.strip()[:MAX_FOLDER_NAME]
+    if not clean:
+        flash(request, "Give the folder a name.", "error")
+        return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+    folder = repo.create_folder(
+        project_id=str(project_id),
+        name=clean,
+        slug=workspace.unique_slug(str(project_id), clean),
+        kind="custom",
+        description=description.strip(),
+        position=repo.next_folder_position(str(project_id)),
+        created_by=str(user["id"]),
+    )
+    flash(request, f"Added {folder['name']}.")
+    return RedirectResponse(f"/projects/{project_id}/folders/{folder['id']}", status_code=303)
+
+
+@app.post("/projects/{project_id}/folders/{folder_id}/delete")
+def delete_folder_submit(request: Request, project_id: uuid.UUID, folder_id: uuid.UUID,
+                         csrf: str = Form("")):
+    """
+    Only an owner may delete a folder, because its documents go with it.
+    The four seeded folders are refused: removing them would break the
+    structure SKILL.md tells an agent to expect.
+    """
+    user = require_user(request)
+    check_csrf(request, csrf)
+    load_project(project_id, user, Role.OWNER.value)
+    folder = repo.get_folder(str(folder_id))
+    if folder is None or str(folder["project_id"]) != str(project_id):
+        raise StarletteHTTPException(404, "Folder not found.")
+    if folder["kind"] != "custom":
+        raise StarletteHTTPException(403, "The four standard folders cannot be deleted.")
+
+    repo.delete_folder(str(folder_id))
+    flash(request, f"Deleted {folder['name']} and everything in it.")
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+@app.post("/projects/{project_id}/documents")
+def create_document_submit(request: Request, project_id: uuid.UUID,
+                           folder_id: str = Form(...), title: str = Form(""),
+                           csrf: str = Form("")):
+    user = require_user(request)
+    check_csrf(request, csrf)
+    load_project(project_id, user, Role.MEMBER.value)
+    folder = repo.get_folder(folder_id)
+    if folder is None or str(folder["project_id"]) != str(project_id):
+        raise StarletteHTTPException(404, "Folder not found.")
+
+    clean = title.strip()[:MAX_TITLE] or "Untitled"
+    document = repo.create_document(
+        project_id=str(project_id), folder_id=folder_id, title=clean,
+        body=f"# {clean}\n\n", doc_kind="note", created_by=str(user["id"]),
+    )
+    return RedirectResponse(f"/documents/{document['id']}?edit=1", status_code=303)
+
+
+@app.get("/documents/{document_id}")
+def document_page(request: Request, document_id: uuid.UUID, edit: int = 0):
+    user = require_user(request)
+    document, project, role = load_document(document_id, user)
+    can_edit = ROLE_RANK[role] >= ROLE_RANK[Role.MEMBER.value]
+    return render(
+        request, "document.html",
+        project=project, role=role, document=document,
+        folder=repo.get_folder(str(document["folder_id"])) if document["folder_id"] else None,
+        folders=repo.list_folders(str(project["id"])),
+        can_edit=can_edit,
+        editing=bool(edit) and can_edit,
+    )
+
+
+@app.post("/documents/{document_id}")
+def save_document(request: Request, document_id: uuid.UUID,
+                  title: str = Form(...), body: str = Form(""), csrf: str = Form("")):
+    user = require_user(request)
+    check_csrf(request, csrf)
+    document, project, _role = load_document(document_id, user, Role.MEMBER.value)
+    if len(body) > MAX_DOC_BODY:
+        raise StarletteHTTPException(413, "That document is too large to save.")
+
+    repo.update_document(str(document_id), title.strip()[:MAX_TITLE] or "Untitled",
+                         body, str(user["id"]))
+    flash(request, "Saved.")
+    return RedirectResponse(f"/documents/{document_id}", status_code=303)
+
+
+@app.post("/documents/{document_id}/delete")
+def delete_document_submit(request: Request, document_id: uuid.UUID, csrf: str = Form("")):
+    """
+    The charter and SKILL.md cannot be deleted: every project is expected to
+    have exactly one of each, and the UI has nowhere to recreate them.
+    """
+    user = require_user(request)
+    check_csrf(request, csrf)
+    document, project, _role = load_document(document_id, user, Role.MEMBER.value)
+    if document["doc_kind"] != "note":
+        raise StarletteHTTPException(403, "The charter and SKILL.md cannot be deleted.")
+
+    folder_id = document["folder_id"]
+    repo.delete_document(str(document_id))
+    flash(request, "Document deleted.")
+    target = (f"/projects/{project['id']}/folders/{folder_id}" if folder_id
+              else f"/projects/{project['id']}")
+    return RedirectResponse(target, status_code=303)
+
+
+@app.get("/projects/{project_id}/skill.md")
+def download_skill(request: Request, project_id: uuid.UUID):
+    """
+    Serve SKILL.md as a plain file, so an agent can fetch it directly and a
+    person can save it into their repo next to the code it describes.
+    """
+    user = require_user(request)
+    project, _role = load_project(project_id, user)
+    document = repo.get_special_document(str(project_id), "skill")
+    if document is None:
+        raise StarletteHTTPException(404, "This project has no SKILL.md.")
+    return Response(
+        document["body"],
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="SKILL.md"'},
+    )
+
+
+# =====================================================================
+# 6. Team and roles
+# =====================================================================
+
+
+@app.get("/projects/{project_id}/team")
+def team_page(request: Request, project_id: uuid.UUID):
+    """Everyone in the project can see who else is in it and at what role."""
+    user = require_user(request)
+    project, role = load_project(project_id, user)
+    is_owner = ROLE_RANK[role] >= ROLE_RANK[Role.OWNER.value]
+    return render(
+        request, "team.html",
+        project=project, role=role, is_owner=is_owner,
+        members=repo.list_members(str(project_id)),
+        invites=repo.list_invites(str(project_id)) if is_owner else [],
+        folders=repo.list_folders(str(project_id)),
+        roles=[r.value for r in Role],
+        base_url=settings.base_url.rstrip("/"),
+    )
+
+
+@app.post("/projects/{project_id}/invites")
+def create_invite_submit(request: Request, project_id: uuid.UUID,
+                         role: str = Form(...), label: str = Form(""),
+                         max_uses: str = Form(""), csrf: str = Form("")):
+    user = require_user(request)
+    check_csrf(request, csrf)
+    load_project(project_id, user, Role.OWNER.value)
+    if role not in ROLE_RANK:
+        raise StarletteHTTPException(400, "Unknown role.")
+
+    # Blank means an unlimited link; anything unparseable is treated as blank
+    # rather than rejected, since this is a convenience field.
+    try:
+        uses = int(max_uses) if max_uses.strip() else None
+    except ValueError:
+        uses = None
+    if uses is not None and uses < 1:
+        uses = None
+
+    invite = repo.create_invite(str(project_id), workspace.new_invite_code(),
+                                role, label, uses, str(user["id"]))
+    repo.audit("invite.create", user_id=str(user["id"]), project_id=str(project_id),
+               detail={"role": role})
+    flash(request, f"Invite link ready for the {invite['role']} role.")
+    return RedirectResponse(f"/projects/{project_id}/team", status_code=303)
+
+
+@app.post("/projects/{project_id}/invites/{invite_id}/revoke")
+def revoke_invite_submit(request: Request, project_id: uuid.UUID, invite_id: uuid.UUID,
+                         csrf: str = Form("")):
+    user = require_user(request)
+    check_csrf(request, csrf)
+    load_project(project_id, user, Role.OWNER.value)
+    repo.revoke_invite(str(invite_id), str(project_id))
+    flash(request, "Invite revoked. The link no longer works.")
+    return RedirectResponse(f"/projects/{project_id}/team", status_code=303)
+
+
+@app.post("/projects/{project_id}/members/{member_id}/role")
+def change_member_role(request: Request, project_id: uuid.UUID, member_id: uuid.UUID,
+                       role: str = Form(...), csrf: str = Form("")):
+    """
+    Change someone's role, or remove them with role='remove'.
+
+    A project must keep at least one owner, otherwise nobody could ever manage
+    it again. Both the demote and the remove path check that.
+    """
+    user = require_user(request)
+    check_csrf(request, csrf)
+    load_project(project_id, user, Role.OWNER.value)
+
+    target_id = str(member_id)
+    current = repo.get_role(str(project_id), {"id": target_id, "is_admin": False})
+    if current is None:
+        raise StarletteHTTPException(404, "That person is not in this project.")
+
+    losing_an_owner = current == Role.OWNER.value and role != Role.OWNER.value
+    if losing_an_owner and repo.count_owners(str(project_id)) <= 1:
+        raise StarletteHTTPException(
+            400, "This is the only owner. Make someone else an owner first.")
+
+    if role == "remove":
+        repo.remove_member(str(project_id), target_id)
+        flash(request, "Removed from the project.")
+    elif role in ROLE_RANK:
+        repo.upsert_member(str(project_id), target_id, role)
+        flash(request, f"Role changed to {role}.")
+    else:
+        raise StarletteHTTPException(400, "Unknown role.")
+
+    repo.audit("member.role", user_id=str(user["id"]), project_id=str(project_id),
+               detail={"target": target_id, "role": role})
+    return RedirectResponse(f"/projects/{project_id}/team", status_code=303)
+# =====================================================================
+# 7. Review and event detail
 # =====================================================================
 
 
@@ -521,7 +832,7 @@ def supersede(request: Request, event_id: uuid.UUID, replaced_by_id: str = Form(
 
 
 # =====================================================================
-# 6. Project settings, users, API tokens
+# 8. Project settings, users, API tokens
 # =====================================================================
 
 
@@ -634,7 +945,7 @@ def tokens_revoke(request: Request, token_id: uuid.UUID, csrf: str = Form("")):
 
 
 # =====================================================================
-# 7. REST API
+# 9. REST API
 # =====================================================================
 
 
@@ -723,7 +1034,7 @@ async def api_add_source(request: Request, project_id: uuid.UUID):
 
 
 # =====================================================================
-# 8. Entry point
+# 10. Entry point
 # =====================================================================
 
 

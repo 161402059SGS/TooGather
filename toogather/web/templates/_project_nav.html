@@ -1,11 +1,16 @@
-{#- Tabs shown on every project page. `active` is set by the including template. -#}
-<h1>{{ project.name }}</h1>
-{% if project.description %}<p class="muted">{{ project.description }}</p>{% endif %}
-<nav class="project-nav" aria-label="Project">
-  <a href="/projects/{{ project.id }}" {% if active == 'overview' %}aria-current="page"{% endif %}>Overview</a>
-  <a href="/projects/{{ project.id }}/review" {% if active == 'review' %}aria-current="page"{% endif %}>Review</a>
-  <a href="/projects/{{ project.id }}/events" {% if active == 'events' %}aria-current="page"{% endif %}>All events</a>
-  {% if role == 'owner' %}
-  <a href="/projects/{{ project.id }}/settings" {% if active == 'settings' %}aria-current="page"{% endif %}>Settings</a>
-  {% endif %}
+{#- The heading strip on a project sub-page.
+
+    This used to be a row of tabs. Navigation now lives in the sidebar, so
+    all that is left is a breadcrumb back to the project and the page's own
+    title. `active` is still set by the including template and names the
+    current page. -#}
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <a href="/projects/{{ project.id }}">{{ project.name }}</a>
+  <span class="sep">/</span>
+  <span>
+    {%- if active == 'review' %}Review
+    {%- elif active == 'events' %}All events
+    {%- elif active == 'settings' %}Settings
+    {%- else %}{{ active | title }}{% endif -%}
+  </span>
 </nav>
