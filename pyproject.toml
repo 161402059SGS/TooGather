@@ -1,0 +1,51 @@
+[project]
+name = "toogather"
+version = "0.1.0"
+description = "Shared project memory for teams: decisions, commitments, changes, risks and open questions that people and AI agents can both use."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "psycopg[binary,pool]>=3.2",
+    "argon2-cffi>=23.1",
+    "itsdangerous>=2.2",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+# The MCP bridge is optional: only people connecting an AI agent need it.
+mcp = ["mcp>=2.2,<3"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+toogather-web = "toogather.web.app:main"
+toogather-worker = "toogather.worker:main"
+toogather-mcp = "toogather.mcp_server:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["toogather*"]
+
+[tool.setuptools.package-data]
+"toogather" = ["migrations/*.sql"]
+"toogather.web" = ["templates/*.html", "static/*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+# B008: FastAPI declares form fields as File()/Form() defaults by design.
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

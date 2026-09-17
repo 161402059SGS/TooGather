@@ -1,0 +1,56 @@
+# TooGather: one command to run everything.
+#
+#   cp .env.example .env      # then edit the values marked CHANGE
+#   docker compose up -d
+#   open http://<this-machine>:8080
+#
+# Three services: the database, the web app, and the background worker.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: toogather
+      POSTGRES_USER: toogather
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - toogather-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U toogather -d toogather"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # No "ports:" on purpose: the database is reachable only by the app,
+    # never from the office network.
+
+  web:
+    build: .
+    image: toogather:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://toogather:${POSTGRES_PASSWORD}@db:5432/toogather
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      # Change the left number to use a different port on this machine.
+      # To allow access only from this machine, use "127.0.0.1:8080:8080".
+      - "8080:8080"
+
+  worker:
+    image: toogather:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://toogather:${POSTGRES_PASSWORD}@db:5432/toogather
+    depends_on:
+      db:
+        condition: service_healthy
+      web:
+        condition: service_started
+    command: ["python", "-m", "toogather.worker"]
+
+volumes:
+  toogather-db:

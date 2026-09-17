@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Settings | {{ project.name }}{% endblock %}
+{% block content %}
+{% set active = 'settings' %}{% include "_project_nav.html" %}
+
+<h2>AI extraction</h2>
+<p>When on, uploaded notes are sent to the configured AI service to suggest events.
+Check that your client agreement allows this before turning it on.</p>
+{% if not llm_configured %}<p class="form-error">No AI service is configured on this server yet (LLM_BASE_URL and LLM_MODEL), so uploads will be stored but not analysed.</p>{% endif %}
+<form method="post" action="/projects/{{ project.id }}/settings/ai">
+  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+  <label class="checkbox"><input type="checkbox" name="enabled" {% if project.ai_extraction_enabled %}checked{% endif %}> Send uploaded notes to AI for suggestions</label>
+  <button type="submit">Save</button>
+</form>
+
+<h2>Members</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>
+  <tbody>
+  {% for m in members %}
+    <tr>
+      <td>{{ m.display_name }}</td><td>{{ m.email }}</td><td>{{ m.role }}</td>
+      <td>
+        <form method="post" action="/projects/{{ project.id }}/members">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="user_id" value="{{ m.id }}">
+          <input type="hidden" name="role" value="{{ m.role }}">
+          <input type="hidden" name="action" value="remove">
+          <button class="danger" type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+
+<h3>Add or change a member</h3>
+<form method="post" action="/projects/{{ project.id }}/members" class="row">
+  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+  <div><label for="user_id">Person</label>
+    <select id="user_id" name="user_id" required>
+      {% for u in all_users if u.is_active %}<option value="{{ u.id }}">{{ u.display_name }} ({{ u.email }})</option>{% endfor %}
+    </select></div>
+  <div><label for="role">Role</label>
+    <select id="role" name="role">
+      <option value="member">Member: add notes and review</option>
+      <option value="viewer">Viewer: read only</option>
+      <option value="owner">Owner: also manages settings</option>
+    </select></div>
+  <div><button type="submit">Save member</button></div>
+</form>
+<p class="small muted">Someone missing from the list? An admin can create their account under People.</p>
+{% endblock %}

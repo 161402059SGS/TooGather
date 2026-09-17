@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Review | {{ project.name }}{% endblock %}
+{% block content %}
+{% set active = 'review' %}{% include "_project_nav.html" %}
+<p class="muted">These were suggested from uploaded notes. Confirm what is correct and reject the rest.
+Only confirmed events count as project memory.</p>
+{% if events %}
+  <ul class="events">
+    {% for e in events %}{% include "_event_row.html" %}{% endfor %}
+  </ul>
+{% else %}
+  <p class="muted">Nothing to review. Upload meeting notes on the overview page to get suggestions.</p>
+{% endif %}
+{% endblock %}

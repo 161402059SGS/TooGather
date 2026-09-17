@@ -1,0 +1,11 @@
+{#- Tabs shown on every project page. `active` is set by the including template. -#}
+<h1>{{ project.name }}</h1>
+{% if project.description %}<p class="muted">{{ project.description }}</p>{% endif %}
+<nav class="project-nav" aria-label="Project">
+  <a href="/projects/{{ project.id }}" {% if active == 'overview' %}aria-current="page"{% endif %}>Overview</a>
+  <a href="/projects/{{ project.id }}/review" {% if active == 'review' %}aria-current="page"{% endif %}>Review</a>
+  <a href="/projects/{{ project.id }}/events" {% if active == 'events' %}aria-current="page"{% endif %}>All events</a>
+  {% if role == 'owner' %}
+  <a href="/projects/{{ project.id }}/settings" {% if active == 'settings' %}aria-current="page"{% endif %}>Settings</a>
+  {% endif %}
+</nav>

@@ -1,0 +1,23 @@
+# Secrets and local configuration: never commit these.
+.env
+*.env.local
+backups/
+*.age
+*.sql.gz
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

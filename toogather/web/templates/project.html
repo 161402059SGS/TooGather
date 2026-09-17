@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} | TooGather{% endblock %}
+{% block content %}
+{% set active = 'overview' %}{% include "_project_nav.html" %}
+
+<div class="stats">
+  <div><strong>{{ findings|length }}</strong><span class="muted small">need attention</span></div>
+  <div><strong>{{ brief.awaiting_review }}</strong><span class="muted small">awaiting review</span></div>
+  <div><strong>{{ brief.open_commitments|length }}</strong><span class="muted small">open commitments</span></div>
+  <div><strong>{{ brief.open_questions|length }}</strong><span class="muted small">open questions</span></div>
+</div>
+
+<div class="columns">
+  <section>
+    <h2>Needs attention</h2>
+    {% if findings %}
+      <ul class="attention">
+      {% for f in findings %}
+        <li>
+          <span class="{{ f.severity }}">{{ 'Act now' if f.severity == 'high' else 'Check soon' }}</span>
+          <div><a href="/events/{{ f.event_id }}">{{ f.summary }}</a></div>
+          <div class="small muted">{{ f.message }}</div>
+        </li>
+      {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Nothing needs attention. Commitments are on time and changes are linked to decisions.</p>
+    {% endif %}
+
+    {% macro brief_list(title, items, empty) %}
+      <h2>{{ title }}</h2>
+      {% if items %}
+        <ul class="attention">
+        {% for i in items %}
+          <li>
+            <a href="/events/{{ i.id }}">{{ i.summary }}</a>
+            <div class="small muted">
+              {% if i.owner %}{{ i.owner }}{% endif %}{% if i.owner and i.due_date %}, {% endif %}{% if i.due_date %}due {{ i.due_date }}{% endif %}
+              {% if not i.owner and not i.due_date %}Recorded {{ i.recorded }}{% endif %}
+            </div>
+          </li>
+        {% endfor %}
+        </ul>
+      {% else %}<p class="muted">{{ empty }}</p>{% endif %}
+    {% endmacro %}
+
+    {{ brief_list("Open commitments", brief.open_commitments[:8], "No open commitments.") }}
+    {{ brief_list("Latest decisions", brief.decisions[:8], "No decisions recorded yet.") }}
+    {{ brief_list("Open risks", brief.open_risks[:8], "No open risks.") }}
+    {{ brief_list("Open questions", brief.open_questions[:8], "No open questions.") }}
+  </section>
+
+  <aside>
+    {% if can_edit %}
+    <div class="panel">
+      <h3>Add meeting notes</h3>
+      <p class="small muted">Upload a MoM, transcript, or chat export. Suggested events appear in Review.</p>
+      <form method="post" action="/projects/{{ project.id }}/upload" enctype="multipart/form-data">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label for="file">Text file</label>
+        <input id="file" name="file" type="file" accept=".txt,.md,.vtt,.srt,.csv">
+        <details>
+          <summary class="small">Or paste text</summary>
+          <label for="title">Title</label>
+          <input id="title" name="title" type="text" placeholder="e.g. MoM weekly sync {{ today }}">
+          <label for="pasted_text">Notes</label>
+          <textarea id="pasted_text" name="pasted_text"></textarea>
+        </details>
+        <p></p>
+        <button type="submit">Add notes</button>
+      </form>
+      {% if not project.ai_extraction_enabled %}
+        <p class="small muted">AI extraction is off for this project, so uploads are stored but not analysed.
+        {% if role == 'owner' %}<a href="/projects/{{ project.id }}/settings">Change this in settings.</a>{% endif %}</p>
+      {% endif %}
+    </div>
+
+    <div class="panel">
+      <h3>Record an event</h3>
+      <form method="post" action="/projects/{{ project.id }}/events">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label for="type">Type</label>
+        <select id="type" name="type" required>
+          {% for t in EVENT_TYPES %}<option value="{{ t }}">{{ EVENT_TYPE_LABELS[t] }}</option>{% endfor %}
+        </select>
+        <label for="summary">Summary</label>
+        <input id="summary" name="summary" type="text" required placeholder="One clear sentence">
+        <div class="row">
+          <div><label for="owner">Owner</label><input id="owner" name="owner" type="text"></div>
+          <div><label for="due_date">Due date</label><input id="due_date" name="due_date" type="date"></div>
+        </div>
+        <label for="source_ref">Where did this come from?</label>
+        <input id="source_ref" name="source_ref" type="text" placeholder="Meeting date, ticket, commit">
+        <label for="detail">Details (optional)</label>
+        <textarea id="detail" name="detail"></textarea>
+        <p></p>
+        <button type="submit">Record event</button>
+      </form>
+    </div>
+    {% endif %}
+
+    <div class="panel">
+      <h3>Recent notes</h3>
+      {% if sources %}
+        <ul class="attention">
+        {% for s in sources %}
+          <li>
+            <div>{{ s.filename }}</div>
+            <div class="small muted">
+              {{ s.status }}{% if s.event_count %}, {{ s.event_count }} event(s){% endif %}
+              {% if s.status_note %}<br>{{ s.status_note }}{% endif %}
+            </div>
+          </li>
+        {% endfor %}
+        </ul>
+      {% else %}<p class="small muted">No notes uploaded yet.</p>{% endif %}
+    </div>
+  </aside>
+</div>
+{% endblock %}

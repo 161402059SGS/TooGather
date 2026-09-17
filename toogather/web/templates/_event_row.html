@@ -1,0 +1,32 @@
+{#- One event in the logbook. Used on several pages and returned alone by
+    HTMX after a status change, so the row updates in place. -#}
+<li class="event {{ e.type }} is-{{ e.status }}" id="event-{{ e.id }}">
+  <div class="event-type">{{ EVENT_TYPE_LABELS[e.type] }}</div>
+  <div class="event-summary"><a href="/events/{{ e.id }}">{{ e.summary }}</a></div>
+  <div class="event-meta">
+    <span class="status {{ e.status }}">{{ e.status }}</span>
+    {% if e.owner %}<span>Owner: {{ e.owner }}</span>{% endif %}
+    {% if e.due_date %}<span>Due {{ e.due_date }}</span>{% endif %}
+    {% if e.source_filename or e.source_ref %}<span>From: {{ e.source_filename or e.source_ref }}</span>{% endif %}
+    {% if e.proposed_by == 'ai' %}<span>Suggested by AI</span>{% endif %}
+  </div>
+  {% if not compact and e.detail %}<p class="small muted">{{ e.detail[:280] }}{% if e.detail|length > 280 %}…{% endif %}</p>{% endif %}
+  {% if can_edit %}
+  <div class="event-actions">
+    {% if e.status == 'proposed' %}
+      <button hx-post="/events/{{ e.id }}/status" hx-vals='{"new_status": "confirmed"}'
+              hx-target="#event-{{ e.id }}" hx-swap="outerHTML">Confirm</button>
+      <button class="secondary" hx-post="/events/{{ e.id }}/status" hx-vals='{"new_status": "rejected"}'
+              hx-target="#event-{{ e.id }}" hx-swap="outerHTML">Reject</button>
+    {% elif e.status == 'confirmed' and e.type in ['commitment', 'question', 'risk'] %}
+      <button class="secondary" hx-post="/events/{{ e.id }}/status" hx-vals='{"new_status": "done"}'
+              hx-target="#event-{{ e.id }}" hx-swap="outerHTML">
+        {% if e.type == 'question' %}Mark answered{% elif e.type == 'risk' %}Mark resolved{% else %}Mark done{% endif %}
+      </button>
+    {% elif e.status == 'rejected' %}
+      <button class="secondary" hx-post="/events/{{ e.id }}/status" hx-vals='{"new_status": "proposed"}'
+              hx-target="#event-{{ e.id }}" hx-swap="outerHTML">Undo reject</button>
+    {% endif %}
+  </div>
+  {% endif %}
+</li>

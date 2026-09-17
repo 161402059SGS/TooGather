@@ -1,0 +1,218 @@
+/*
+  TooGather stylesheet.
+
+  Design idea: a project logbook. The interface stays quiet so the content is
+  easy to scan; the one strong visual signal is the colored bar on the left
+  of every event, which tells you its type at a glance.
+
+  System fonts are used on purpose: TooGather often runs on an office network
+  without internet access, so it must not depend on web fonts.
+*/
+
+:root {
+  --ink: #1d2433;
+  --ink-soft: #566178;
+  --paper: #ffffff;
+  --surface: #f3f5f8;
+  --rule: #d8dde6;
+  --focus: #2d5bd2;
+  --link: #2449b0;
+  --danger: #b3261e;
+  --ok: #1b6e4f;
+
+  /* One color per event type. Used for the left bar and the type label. */
+  --t-decision: #3f4fb5;
+  --t-commitment: #0f7a64;
+  --t-change: #a86a12;
+  --t-risk: #b3261e;
+  --t-question: #7a4aa8;
+
+  --radius: 6px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e6e9ef;
+    --ink-soft: #a3abbb;
+    --paper: #151a23;
+    --surface: #1d2430;
+    --rule: #333c4c;
+    --focus: #7ea2ff;
+    --link: #93b0ff;
+    --danger: #ff8a80;
+    --ok: #6fd3a8;
+    --t-decision: #8e9bf0;
+    --t-commitment: #4fcfb0;
+    --t-change: #e8ae52;
+    --t-risk: #ff8a80;
+    --t-question: #c39cf0;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+a { color: var(--link); }
+a:hover { text-decoration-thickness: 2px; }
+
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+h1, h2, h3 { line-height: 1.25; margin: 0 0 .5rem; }
+h1 { font-size: 1.75rem; font-weight: 650; letter-spacing: -0.01em; }
+h2 { font-size: 1.2rem; font-weight: 620; margin-top: 2rem; }
+h3 { font-size: 1rem; font-weight: 620; }
+p { margin: 0 0 1rem; max-width: 72ch; }
+
+.muted { color: var(--ink-soft); }
+.small { font-size: .875rem; }
+
+/* ---------- Page frame ---------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: .75rem 1.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+.brand { font-weight: 700; color: var(--ink); text-decoration: none; letter-spacing: -0.02em; }
+.topbar nav { display: flex; gap: 1rem; flex-wrap: wrap; }
+.topbar nav a { color: var(--ink-soft); text-decoration: none; }
+.topbar nav a:hover { color: var(--ink); }
+.topbar .spacer { flex: 1; }
+
+main { max-width: 1080px; margin: 0 auto; padding: 1.5rem; }
+
+.project-nav { display: flex; gap: 1.25rem; margin: .25rem 0 1.5rem; flex-wrap: wrap; }
+.project-nav a { text-decoration: none; color: var(--ink-soft); padding-bottom: .25rem; }
+.project-nav a[aria-current="page"] { color: var(--ink); border-bottom: 2px solid var(--ink); }
+
+.columns { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 2rem; }
+@media (max-width: 820px) { .columns { grid-template-columns: 1fr; } }
+
+.panel {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+/* ---------- Messages ---------- */
+
+.flash { padding: .6rem 1rem; border-radius: var(--radius); margin-bottom: 1rem;
+         background: var(--surface); border-left: 4px solid var(--ok); }
+.flash.error, .form-error { border-left-color: var(--danger); }
+.form-error { padding: .5rem .75rem; border-left: 4px solid var(--danger); background: var(--surface);
+              margin-bottom: 1rem; }
+
+/* ---------- Forms ---------- */
+
+label { display: block; font-weight: 560; margin: .75rem 0 .25rem; }
+input[type=text], input[type=email], input[type=password], input[type=date], input[type=search],
+select, textarea {
+  width: 100%;
+  font: inherit;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: .5rem .6rem;
+}
+textarea { min-height: 7rem; resize: vertical; }
+.row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: end; }
+.row > * { flex: 1 1 10rem; }
+.checkbox { display: flex; gap: .5rem; align-items: center; font-weight: 400; }
+.checkbox input { width: auto; }
+
+button, .button {
+  font: inherit;
+  font-weight: 560;
+  cursor: pointer;
+  border-radius: var(--radius);
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  padding: .45rem .9rem;
+  text-decoration: none;
+  display: inline-block;
+}
+button.secondary, .button.secondary { background: transparent; color: var(--ink); border-color: var(--rule); }
+button.danger { background: transparent; color: var(--danger); border-color: var(--rule); }
+button.link { background: none; border: none; color: var(--link); padding: 0; text-decoration: underline; }
+.narrow { max-width: 26rem; }
+details summary { cursor: pointer; font-weight: 560; }
+
+/* ---------- Events: the logbook ---------- */
+
+.events { list-style: none; margin: 0; padding: 0; }
+.event {
+  border-left: 4px solid var(--rule);
+  padding: .6rem .9rem;
+  margin-bottom: .6rem;
+  background: var(--paper);
+  border-top: 1px solid var(--rule);
+  border-right: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.event.decision   { border-left-color: var(--t-decision); }
+.event.commitment { border-left-color: var(--t-commitment); }
+.event.change     { border-left-color: var(--t-change); }
+.event.risk       { border-left-color: var(--t-risk); }
+.event.question   { border-left-color: var(--t-question); }
+
+.event-type { font-size: .8rem; font-weight: 650; }
+.event.decision .event-type   { color: var(--t-decision); }
+.event.commitment .event-type { color: var(--t-commitment); }
+.event.change .event-type     { color: var(--t-change); }
+.event.risk .event-type       { color: var(--t-risk); }
+.event.question .event-type   { color: var(--t-question); }
+
+.event-summary { font-weight: 560; margin: .1rem 0; }
+.event-summary a { color: var(--ink); text-decoration: none; }
+.event-summary a:hover { text-decoration: underline; }
+.event-meta { font-size: .85rem; color: var(--ink-soft); display: flex; gap: .9rem; flex-wrap: wrap; }
+.event-actions { display: flex; gap: .5rem; margin-top: .5rem; }
+.event.is-done .event-summary, .event.is-superseded .event-summary { text-decoration: line-through; color: var(--ink-soft); }
+
+.status { font-size: .8rem; border: 1px solid var(--rule); border-radius: 999px; padding: 0 .5rem; }
+.status.proposed { border-style: dashed; }
+
+/* ---------- Attention list ---------- */
+
+.attention { list-style: none; margin: 0; padding: 0; }
+.attention li { padding: .5rem 0; border-bottom: 1px solid var(--rule); }
+.attention li:last-child { border-bottom: none; }
+.attention .high { color: var(--danger); font-weight: 650; font-size: .8rem; }
+.attention .medium { color: var(--ink-soft); font-weight: 650; font-size: .8rem; }
+
+/* ---------- Tables ---------- */
+
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .95rem; }
+th, td { text-align: left; padding: .45rem .5rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 620; color: var(--ink-soft); }
+
+.stats { display: flex; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.stats div { min-width: 6rem; }
+.stats strong { display: block; font-size: 1.5rem; font-weight: 650; }
+
+code, .token { font-family: var(--mono); font-size: .9rem; }
+.token { display: block; padding: .6rem; background: var(--surface); border-radius: var(--radius);
+         word-break: break-all; }
+pre.source { white-space: pre-wrap; background: var(--surface); padding: 1rem; border-radius: var(--radius);
+             max-height: 24rem; overflow: auto; font-family: var(--mono); font-size: .85rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

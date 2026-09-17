@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ e.summary }} | TooGather{% endblock %}
+{% block content %}
+<p class="small"><a href="/projects/{{ project.id }}">{{ project.name }}</a></p>
+<ul class="events">{% set compact = false %}{% include "_event_row.html" %}</ul>
+
+{% if e.detail %}<h2>Details</h2><p>{{ e.detail }}</p>{% endif %}
+
+{% if related %}
+  <h2>Linked to</h2>
+  <p><a href="/events/{{ related.id }}">{{ EVENT_TYPE_LABELS[related.type] }}: {{ related.summary }}</a></p>
+{% endif %}
+
+{% if can_edit and e.status in ['confirmed', 'done'] and decisions %}
+  <h2>{% if e.type == 'change' %}Which decision does this change implement?{% else %}Link to a decision{% endif %}</h2>
+  <form method="post" action="/events/{{ e.id }}/link" class="row">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <div><label for="related_id">Decision</label>
+      <select id="related_id" name="related_id"><option value="">No link</option>
+        {% for d in decisions %}<option value="{{ d.id }}" {% if e.related_id and d.id|string == e.related_id|string %}selected{% endif %}>{{ d.summary[:90] }}</option>{% endfor %}
+      </select></div>
+    <div><button type="submit">Save link</button></div>
+  </form>
+{% endif %}
+
+{% if can_edit and e.status == 'confirmed' and decisions %}
+  <details>
+    <summary>This was replaced by a newer decision</summary>
+    <form method="post" action="/events/{{ e.id }}/supersede" class="row">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <div><label for="replaced_by_id">Newer decision</label>
+        <select id="replaced_by_id" name="replaced_by_id" required>
+          {% for d in decisions %}<option value="{{ d.id }}">{{ d.summary[:90] }}</option>{% endfor %}
+        </select></div>
+      <div><button class="secondary" type="submit">Mark as superseded</button></div>
+    </form>
+  </details>
+{% endif %}
+
+<h2>History</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>When</th><th>Change</th><th>By</th><th>Note</th></tr></thead>
+  <tbody>
+  {% for h in history %}
+    <tr>
+      <td>{{ h.changed_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td>{% if h.old_status %}{{ h.old_status }} to {% endif %}{{ h.new_status }}</td>
+      <td>{{ h.changed_by_name or ('AI extraction' if e.proposed_by == 'ai' and not h.old_status else '') }}</td>
+      <td>{{ h.note }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+
+{% if source %}
+  <h2>Source: {{ source.filename }}</h2>
+  <pre class="source">{{ source.content[:20000] }}</pre>
+{% endif %}
+{% endblock %}

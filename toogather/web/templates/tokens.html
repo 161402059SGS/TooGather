@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}API tokens | TooGather{% endblock %}
+{% block content %}
+<h1>API tokens</h1>
+<p>Tokens let AI agents (through the MCP bridge) and scripts read your projects as you.
+They can see exactly what you can see. Every call is recorded in the audit log.</p>
+
+{% if new_token %}
+  <div class="panel" role="status">
+    <h3>Copy your new token now</h3>
+    <p class="small">It will not be shown again. Store it like a password.</p>
+    <code class="token">{{ new_token }}</code>
+  </div>
+{% endif %}
+
+<form method="post" action="/account/tokens" class="row narrow">
+  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+  <div><label for="name">Token name</label><input id="name" name="name" type="text" required placeholder="e.g. Claude Desktop on my laptop"></div>
+  <div><button type="submit">Create token</button></div>
+</form>
+
+<h2>Your tokens</h2>
+{% if tokens %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Name</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+  {% for t in tokens %}
+    <tr>
+      <td>{{ t.name }}</td>
+      <td>{{ t.created_at.strftime('%Y-%m-%d') }}</td>
+      <td>{{ t.last_used_at.strftime('%Y-%m-%d %H:%M') if t.last_used_at else 'Never' }}</td>
+      <td>{{ 'Revoked' if t.revoked_at else 'Active' }}</td>
+      <td>{% if not t.revoked_at %}
+        <form method="post" action="/account/tokens/{{ t.id }}/revoke">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <button class="danger" type="submit">Revoke</button>
+        </form>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% else %}<p class="muted">No tokens yet.</p>{% endif %}
+
+<h2>Connect an AI agent</h2>
+<p>Install the bridge with <code>pip install "toogather[mcp]"</code>, then add this to your agent's MCP configuration:</p>
+<pre class="source">{
+  "mcpServers": {
+    "toogather": {
+      "command": "toogather-mcp",
+      "env": {
+        "TOOGATHER_URL": "{{ base_url }}",
+        "TOOGATHER_TOKEN": "tg_your_token_here"
+      }
+    }
+  }
+}</pre>
+{% endblock %}

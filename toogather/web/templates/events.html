@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Events | {{ project.name }}{% endblock %}
+{% block content %}
+{% set active = 'events' %}{% include "_project_nav.html" %}
+<form method="get" action="/projects/{{ project.id }}/events" class="row">
+  <div><label for="q">Search</label><input id="q" name="q" type="search" value="{{ q }}" placeholder="e.g. batch numbering"></div>
+  <div><label for="type">Type</label>
+    <select id="type" name="type"><option value="">Any type</option>
+      {% for t in EVENT_TYPES %}<option value="{{ t }}" {% if t == type_filter %}selected{% endif %}>{{ EVENT_TYPE_LABELS[t] }}</option>{% endfor %}
+    </select></div>
+  <div><label for="status">Status</label>
+    <select id="status" name="status"><option value="">Any except rejected</option>
+      {% for s in EVENT_STATUSES %}<option value="{{ s }}" {% if s == status_filter %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select></div>
+  <div><button type="submit">Search</button></div>
+</form>
+<p></p>
+{% if events %}
+  <ul class="events">
+    {% for e in events %}{% set can_edit = role != 'viewer' %}{% include "_event_row.html" %}{% endfor %}
+  </ul>
+{% else %}
+  <p class="muted">No events match. Try fewer words or clear the filters.</p>
+{% endif %}
+{% endblock %}
