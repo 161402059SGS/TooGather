@@ -10,6 +10,8 @@
   <span>
     {%- if active == 'review' %}Review
     {%- elif active == 'events' %}All events
+    {%- elif active == 'material' %}Material
+    {%- elif active == 'connectors' %}Connectors
     {%- elif active == 'settings' %}Settings
     {%- else %}{{ active | title }}{% endif -%}
   </span>

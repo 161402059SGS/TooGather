@@ -16,6 +16,7 @@
   <title>{% block title %}TooGather{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
 </head>
 <body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
 
@@ -76,6 +77,10 @@
             <a class="nav-item" href="/projects/{{ project.id }}/review">
               <span class="nav-icon" aria-hidden="true">◎</span>
               <span class="nav-text">Review</span>
+            </a>
+            <a class="nav-item" href="/projects/{{ project.id }}/sources">
+              <span class="nav-icon" aria-hidden="true">⌸</span>
+              <span class="nav-text">Material</span>
             </a>
             {#- Connectors and settings are owner-only pages. A member who
                 followed the link would get a clear 403, but showing a door

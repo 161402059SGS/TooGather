@@ -40,13 +40,28 @@ Both come back the day TooGather grows real accounts. Until then the honest
 statement is the one in the README: this is a tool for a trusted network, and
 authentication belongs in front of it.
 
-## Next: v0.3
+## Shipped: v0.3
 
-- [ ] Document version history, so two people editing one page stop overwriting each other
-- [ ] More connectors on the v0.2 framework: email mailbox, Jira or Linear, a plain webhook
-- [ ] Editing an event's text, not only its status
-- [ ] Bulk confirm and reject in the review queue
-- [ ] A per-project view of what a connector brought in, separate from what people uploaded
+- [x] Document version history, so two people editing one page stop overwriting each other
+- [x] Email mailbox connector (IMAP)
+- [x] A plain webhook, so anything that can make an HTTP request can post a note
+- [x] Editing an event's text, not only its status
+- [x] Bulk confirm and reject in the review queue
+- [x] A per-project view of what a connector brought in, separate from what people uploaded
+
+Jira and Linear were on this list and are not built. Both publish outgoing
+webhooks, so the webhook connector already covers the common case - point Jira
+at the URL and issue transitions arrive as notes. A dedicated connector would
+only add reading *from* them on a schedule, which nobody has asked for yet. It
+stays on the list below rather than being written speculatively.
+
+## Next: v0.4
+
+- [ ] A Jira or Linear connector that reads on a schedule, if pilot teams want more than their outgoing webhooks give
+- [ ] Diffing two document versions, rather than reading them side by side
+- [ ] Undoing a bulk review in one step
+- [ ] Attachments on an email message, rather than only its text
+- [ ] Rate limiting on the webhook endpoint
 
 ## Later
 

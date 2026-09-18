@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Material | {{ project.name }}{% endblock %}
+
+{#- Everything that has been brought into this project, and where each piece
+    came from. Worth its own page once connectors exist: "did a person put
+    this here, or did it arrive on its own?" is the first question asked of a
+    proposal nobody recognises. -#}
+{% block content %}
+{% set active = 'material' %}{% include "_project_nav.html" %}
+
+<h1>Material</h1>
+<p class="lead">What this project's memory was built from.</p>
+
+{% set total = counts.values() | sum %}
+<div class="filter-row">
+  <a class="chip {% if not kind_filter %}is-active{% endif %}"
+     href="/projects/{{ project.id }}/sources">Everything ({{ total }})</a>
+  <a class="chip {% if kind_filter == 'upload' %}is-active{% endif %}"
+     href="/projects/{{ project.id }}/sources?kind=upload">
+    Uploaded by people ({{ counts.get('upload', 0) }})
+  </a>
+  <a class="chip {% if kind_filter == 'connector' %}is-active{% endif %}"
+     href="/projects/{{ project.id }}/sources?kind=connector">
+    From connectors ({{ counts.get('connector', 0) }})
+  </a>
+  <a class="chip {% if kind_filter == 'api' %}is-active{% endif %}"
+     href="/projects/{{ project.id }}/sources?kind=api">
+    Via the API ({{ counts.get('api', 0) }})
+  </a>
+</div>
+
+{% if sources %}
+  <div class="table-wrap"><table>
+    <thead>
+      <tr><th>What</th><th>Where it came from</th><th>When</th>
+          <th>Status</th><th>Events</th></tr>
+    </thead>
+    <tbody>
+      {% for s in sources %}
+        <tr>
+          <td>{{ s.filename }}</td>
+          <td>
+            {%- if s.kind == 'connector' -%}
+              {{ s.connector_name or 'a connector that has since been removed' }}
+              <span class="badge">{{ s.connector_kind or 'connector' }}</span>
+            {%- elif s.kind == 'api' -%}
+              API{% if s.uploaded_by_name %} · {{ s.uploaded_by_name }}{% endif %}
+            {%- else -%}
+              {{ s.uploaded_by_name or 'someone no longer here' }}
+            {%- endif -%}
+          </td>
+          <td class="small faint">{{ s.created_at.strftime('%d %b %Y, %H:%M') }}</td>
+          <td>
+            <span class="status-dot status-{{ 'ok' if s.status == 'done'
+                                              else 'failed' if s.status == 'failed'
+                                              else 'new' }}">{{ s.status }}</span>
+            {% if s.status_note %}
+              <div class="small faint">{{ s.status_note }}</div>
+            {% endif %}
+          </td>
+          <td>{{ s.event_count or '' }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+{% else %}
+  <p class="muted">
+    {% if kind_filter %}
+      Nothing has arrived that way yet.
+    {% else %}
+      Nothing yet. Upload meeting notes on the overview page, or set up a
+      <a href="/projects/{{ project.id }}/connectors">connector</a>.
+    {% endif %}
+  </p>
+{% endif %}
+{% endblock %}

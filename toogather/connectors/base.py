@@ -8,11 +8,26 @@ review, drift rules - is unchanged. That is the whole design. A connector
 that could write confirmed events would be a way to put unreviewed claims
 into a team's memory, which is the one thing TooGather is built not to do.
 
+Two shapes
+----------
+
+A connector either **asks** or **is told**:
+
+  * A polling connector implements `fetch`. The worker calls it on the
+    connector's schedule. Git and email work this way.
+  * An inbound connector sets `inbound = True` and implements `receive`. It is
+    never scheduled; something else posts to a URL carrying its secret code,
+    and that request is handed straight to `receive`. A webhook works this way.
+
+Implement one or the other. The default of each raises, so a connector that
+implements neither says so plainly the first time it is used rather than
+quietly doing nothing.
+
 Writing one
 -----------
 
-Subclass `Connector`, fill in the four class attributes, implement `fetch`,
-and register it:
+Subclass `Connector`, fill in its class attributes, implement `fetch` (or
+`receive`), and register it:
 
     from toogather.connectors import register
     from toogather.connectors.base import Connector, FetchResult, Item
@@ -35,6 +50,11 @@ Rules a connector has to follow, because the worker depends on them:
   * `fetch` is called on a worker thread with no request behind it. Raise
     `ConnectorError` with a message a project owner can act on; any other
     exception is logged as a bug and shown as "unexpected error".
+  * `receive`, by contrast, runs inside a web request made by a stranger.
+    Treat everything about that request as hostile: it is authenticated only
+    by a secret in the URL, which says the caller holds the code, not that
+    the body is well formed. Validate, cap what you keep, and raise
+    `ConnectorError` rather than letting a parse error become a 500.
   * Honour `ctx.cursor`, and return the new one. The cursor is how the
     connector avoids importing the same material twice, and it is opaque to
     everything except the connector that wrote it.
@@ -49,7 +69,6 @@ Rules a connector has to follow, because the worker depends on them:
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
@@ -108,13 +127,35 @@ class Context:
     timeout_seconds: int = 300
 
 
-class Connector(ABC):
-    """Base class for every connector. Instances are stateless and shared."""
+@dataclass(frozen=True)
+class Delivery:
+    """One inbound request handed to a connector's `receive`."""
+
+    content_type: str
+    body: bytes
+    config: dict = field(default_factory=dict)
+    project_id: str = ""
+    connector_id: str = ""
+
+
+class Connector:
+    """
+    Base class for every connector. Instances are stateless and shared.
+
+    Not an ABC: neither `fetch` nor `receive` can be abstract, because a
+    connector implements exactly one of them and an abstract method would
+    force every connector to carry an empty copy of the other.
+    """
 
     kind: ClassVar[str] = ""
     label: ClassVar[str] = ""
     description: ClassVar[str] = ""
     fields: ClassVar[tuple[ConfigField, ...]] = ()
+
+    # True for a connector that is called rather than scheduled. The worker
+    # skips these entirely, and the setup page gives them a URL instead of an
+    # interval.
+    inbound: ClassVar[bool] = False
 
     def config_problem(self, config: dict) -> str | None:
         """
@@ -129,6 +170,25 @@ class Connector(ABC):
                 return f"{spec.label} is required."
         return None
 
-    @abstractmethod
     def fetch(self, ctx: Context) -> FetchResult:
-        """Bring in whatever is new since `ctx.cursor`."""
+        """
+        Bring in whatever is new since `ctx.cursor`.
+
+        Polling connectors implement this. The default exists so an inbound
+        connector does not have to carry an empty one.
+        """
+        raise ConnectorError(
+            f"The {self.label} connector is not something that can be checked on a "
+            "schedule."
+        )
+
+    def receive(self, delivery: Delivery) -> FetchResult:
+        """
+        Turn one inbound request into material.
+
+        Inbound connectors implement this. `delivery.body` is raw bytes from a
+        stranger; nothing has parsed or trusted it yet.
+        """
+        raise ConnectorError(
+            f"The {self.label} connector cannot be posted to."
+        )

@@ -1,6 +1,6 @@
 [project]
 name = "toogather"
-version = "0.2.0"
+version = "0.3.0"
 description = "Shared project memory for teams: decisions, commitments, changes, risks and open questions that people and AI agents can both use."
 readme = "README.md"
 license = "Apache-2.0"

@@ -4,6 +4,53 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-18
+
+v0.2 was about getting material in. v0.3 is about working safely with what is
+already there: keeping the history of anything people write, correcting it
+without breaking the thread, and reviewing a queue without clicking forty times.
+
+### Added
+
+#### Documents keep their history
+
+- **Every save keeps the previous version.** A document page now has a History showing what it said before each save, who saved it, and when. Any version can be read on its own and restored - and restoring is an ordinary save, so the version it replaced is kept too and the restore can itself be undone.
+- **Two people editing one page no longer overwrite each other.** The editor carries the version it was rendered from; if that has moved on by the time it is submitted, the save is refused. The person gets their own text back untouched, with the version that landed underneath it to merge from, and saving again goes through. Before this the later save simply won and the earlier one was gone with no trace.
+
+#### Events can be corrected
+
+- **An event's wording can be edited**, not only its status. A typo in a confirmed decision was previously fixable only by rejecting it and writing a new one, which broke the thread the history hangs on.
+- The previous wording is kept and shown, so a correction is visible rather than silent. Status, links and source are untouched by an edit: fixing a typo does not re-open a decision.
+
+#### Reviewing in bulk
+
+- **Confirm or reject several suggestions at once.** A queue holding forty proposals from one meeting is not reviewed one button at a time; it is abandoned. The per-row buttons still work for the obvious single item.
+- Every id is checked against the project before anything moves, so a crafted form cannot reach into another project's queue, and an event that cannot legally make the move is skipped rather than failing the batch.
+
+#### Two more connectors
+
+- **A webhook.** The connector that makes the others optional: anything that can make an HTTP request can post a note - a CI pipeline, a deploy script, Jira's own outgoing webhooks. It accepts the documented `{"title", "content"}` shape, plain text, or any JSON at all, writing an unfamiliar document out as readable text rather than a wall of braces.
+- **An email mailbox.** Point it at IMAP - ideally an alias the team forwards a project's mail to - and each message arrives as a note with its sender, date, subject and body. A reply is cut where it starts quoting the message before it, so a ten-message thread does not arrive ten times and get proposed ten times. HTML-only mail has its tags stripped rather than being skipped.
+- **The framework grew a second shape.** A connector either *asks* (implements `fetch`, and the worker schedules it) or *is told* (sets `inbound = True`, implements `receive`, and gets a URL instead of an interval). The worker never claims an inbound connector, so it cannot report a failure for something it was never asked to do.
+
+#### Seeing where things came from
+
+- **A Material page** per project, listing everything brought in and its origin, filterable by whether a person uploaded it, a connector brought it, or it arrived through the API. "Did somebody put this here, or did it arrive on its own?" is the first question asked of a proposal nobody recognises.
+
+### Changed
+
+- The sidebar gained a Material entry, and the review queue mentions connectors as a source of suggestions alongside uploads.
+- `get_document` now returns the name of whoever saved it last, which is what the conflict screen shows.
+- The interface's small amount of JavaScript moved into `static/app.js`. It was going to be needed inline for select-all and for the webhook URL field, and the Content-Security-Policy blocks inline handlers - correctly.
+
+### Security
+
+- **The webhook endpoint is the one route with no session and no CSRF token**, because its caller is a machine rather than a browser. The code in its URL is its entire authentication: long, random, revoked by deleting the connector, and worth exactly one thing - adding material to one project, for a person to review. It cannot create an event, so a leaked code buys noise that gets rejected, not a false entry in a team's memory.
+- An unknown or disabled code returns the same 404 as any unknown path, so live codes cannot be probed for.
+- A webhook body is capped at 256 KB and parsed defensively; every malformed shape produces a readable 400 rather than an exception. `/hooks/` errors are JSON, like `/api/`, because an HTML error page tells a CI log nothing.
+- The email connector speaks IMAP over TLS only. A mailbox folder name is checked against a character allow-list before it reaches an IMAP command, so it cannot close the quoting or smuggle in a second command.
+- Bulk review ids are filtered to well-formed UUIDs and then to the ones that really belong to the project, before anything is changed.
+
 ## [0.2.0] - 2026-09-18
 
 ### Added

@@ -57,7 +57,10 @@ Given that model:
 - If `SECRET_KEY` is replaced, stored secrets cannot be read back. The app treats them as unset and asks for them again rather than failing.
 
 **Connectors**
-- A connector is configured by a project owner and runs in the worker, never in a web request.
+- A connector is configured by a project owner. A polling one runs in the worker, never in a web request.
+- A webhook is the one endpoint with no session and no CSRF token, because its caller is a machine rather than a browser. The code in its URL is its entire authentication: long, random, revoked by deleting the connector, and worth exactly one thing — adding material to one project for a person to review. An unknown or disabled code gets the same 404 as any unknown path, so live codes cannot be probed for.
+- A webhook body is capped at 256 KB and parsed defensively; a malformed one is a readable 400, never a 500.
+- The email connector speaks IMAP over TLS only, and the folder name is checked against a character allow-list before it reaches an IMAP command.
 - `git` is run with an argument list, never a shell string. Repository URLs are restricted to https, http and ssh: git's `ext::` transport runs an arbitrary command, and a local path would let a project owner read any repository on the server. Branch names are checked against a character allow-list.
 - An access token is percent-encoded into the URL, so a token containing `@` or `/` cannot change which host is contacted, and it is removed from every message that gets stored or shown.
 - Git prompting is disabled, so a repository that wants credentials fails immediately instead of hanging a worker.
@@ -65,8 +68,8 @@ Given that model:
 - `CONNECTORS_ENABLED=false` turns the whole mechanism off for the server, whatever any project has configured.
 
 **Uploaded documents**
-- A `.docx` part's uncompressed size is checked before it is read, so a small file cannot expand into gigabytes of memory.
-- A `.docx` whose XML declares a DTD is refused. Word never writes one, and accepting one is how an XML parser is talked into expanding entities until the process dies.
+- A `.docx` part is read through a capped stream. The size a zip declares for an entry is in the archive's own header and therefore attacker-controlled, so a file can claim to be small and still decompress to gigabytes.
+- A `.docx` whose XML declares a DTD is refused, scanning the whole part rather than its opening bytes - a DTD must precede the root element, but the comments allowed in front of it can be any length. Word writes neither, and `xml.etree.ElementTree` does expand internal entities, so this check is the only thing holding.
 
 **AI and agents**
 - AI extraction is off for every new project; an owner must enable it.
@@ -97,5 +100,7 @@ These are tracked in the roadmap. Consider them when deciding how to deploy.
 - Anyone holding an invite link can join that project. Links are revocable, but they are not tied to a person.
 - Stored secrets are only as protected as `SECRET_KEY`. Anyone who can read the server's environment can read them.
 - A Git connector clones the repository onto the server. Anyone who can read that server's disk can read the repository.
+- The webhook endpoint is not rate limited. A leaked code cannot create an event or read anything, but it can fill a review queue with noise until an owner deletes the connector.
+- A mailbox password is stored encrypted, but the connector must be able to use it, so it is decrypted in the worker on every run. Use an app password scoped to one mailbox.
 - Deleting a project removes its events and sources from the database, but copies may remain in existing backups until those backups expire.
 - The audit log records API calls and administrative actions, not every page view in the web app.

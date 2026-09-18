@@ -19,13 +19,14 @@ from toogather.connectors.base import (
     Connector,
     ConnectorError,
     Context,
+    Delivery,
     FetchResult,
     Item,
 )
 
 __all__ = [
-    "ConfigField", "Connector", "ConnectorError", "Context", "FetchResult", "Item",
-    "register", "get", "available",
+    "ConfigField", "Connector", "ConnectorError", "Context", "Delivery",
+    "FetchResult", "Item", "register", "get", "available", "pollable",
 ]
 
 _REGISTRY: dict[str, Connector] = {}
@@ -49,10 +50,26 @@ def available() -> list[Connector]:
     return sorted(_REGISTRY.values(), key=lambda c: c.label)
 
 
+def pollable(kind: str) -> bool:
+    """
+    Should a connector of this kind be put on the worker's schedule?
+
+    False for an inbound connector, and false for a kind this server does not
+    have - the caller is deciding what to store, and a connector nobody serves
+    should not sit in the due queue waiting to fail.
+    """
+    connector = get(kind)
+    return connector is not None and not connector.inbound
+
+
 # Built-in connectors are registered here rather than registering themselves,
 # so a connector module imports only `base` and this package stays the single
 # place that decides what ships. The import sits at the bottom because
 # registration needs `register` to exist first.
+from toogather.connectors.email import EmailConnector  # noqa: E402
 from toogather.connectors.git import GitConnector  # noqa: E402
+from toogather.connectors.webhook import WebhookConnector  # noqa: E402
 
 register(GitConnector())
+register(EmailConnector())
+register(WebhookConnector())

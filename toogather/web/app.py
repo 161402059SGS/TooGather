@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -159,8 +159,13 @@ async def _handle_redirect(_request: Request, exc: Redirect):
 
 @app.exception_handler(StarletteHTTPException)
 async def _handle_http_error(request: Request, exc: StarletteHTTPException):
-    """JSON errors for the API, a friendly page for people."""
-    if request.url.path.startswith("/api/"):
+    """
+    JSON errors for machines, a friendly page for people.
+
+    /hooks/ counts as a machine: it is called by a CI job or a script, and an
+    HTML error page tells whoever configured it nothing they can read in a log.
+    """
+    if request.url.path.startswith(("/api/", "/hooks/")):
         return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
     return templates.TemplateResponse(
         request, "error.html",
@@ -260,6 +265,37 @@ def parse_date(value: str | None) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         return None
+
+
+def parse_timestamp(value: str | None) -> datetime | None:
+    """
+    Read back the `updated_at` a form was rendered with.
+
+    Used for the "did somebody else save while I was typing?" check, so an
+    unreadable value returns None, which means "do not check" rather than
+    "the check failed". A tampered field can only give up a safeguard the
+    tamperer already had, never overwrite something they could not have.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _looks_like_uuid(value: str) -> bool:
+    """
+    Is this worth handing to PostgreSQL as a uuid?
+
+    Bulk actions take ids from checkboxes. Filtering them here means one
+    mistyped value cannot make the whole query raise.
+    """
+    try:
+        uuid.UUID(value)
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
 
 
 # =====================================================================
@@ -649,21 +685,104 @@ def document_page(request: Request, document_id: uuid.UUID, edit: int = 0):
         folders=repo.list_folders(str(project["id"])),
         can_edit=can_edit,
         editing=bool(edit) and can_edit,
+        version_count=repo.count_document_versions(str(document_id)),
     )
 
 
 @app.post("/documents/{document_id}")
 def save_document(request: Request, document_id: uuid.UUID,
-                  title: str = Form(...), body: str = Form(""), csrf: str = Form("")):
+                  title: str = Form(...), body: str = Form(""),
+                  expected_updated_at: str = Form(""), csrf: str = Form("")):
+    """
+    Save a document, refusing to overwrite an edit made while this one was open.
+
+    The form carries the `updated_at` it was rendered from. If the stored value
+    has moved on, somebody else saved in the meantime and this save is refused:
+    the editor comes back with both versions and the person decides. Before
+    this, the later save simply won and the earlier one was gone with no trace.
+    """
     user = require_user(request)
     check_csrf(request, csrf)
     document, project, _role = load_document(document_id, user, Role.MEMBER.value)
     if len(body) > MAX_DOC_BODY:
         raise StarletteHTTPException(413, "That document is too large to save.")
 
-    repo.update_document(str(document_id), title.strip()[:MAX_TITLE] or "Untitled",
-                         body, str(user["id"]))
+    clean_title = title.strip()[:MAX_TITLE] or "Untitled"
+    saved = repo.update_document(
+        str(document_id), clean_title, body, str(user["id"]),
+        expected_updated_at=parse_timestamp(expected_updated_at),
+    )
+    if not saved:
+        current = repo.get_document(str(document_id))
+        return render(
+            request, "document.html", status_code=409,
+            project=project, role=repo.get_role(str(project["id"]), user),
+            document=current,
+            folder=(repo.get_folder(str(current["folder_id"]))
+                    if current["folder_id"] else None),
+            folders=repo.list_folders(str(project["id"])),
+            can_edit=True, editing=True,
+            version_count=repo.count_document_versions(str(document_id)),
+            # What this person wrote is kept in the box; nothing is lost while
+            # they decide what to do with it.
+            draft_title=clean_title, draft_body=body,
+            conflict=True,
+        )
+
     flash(request, "Saved.")
+    return RedirectResponse(f"/documents/{document_id}", status_code=303)
+
+
+@app.get("/documents/{document_id}/history")
+def document_history(request: Request, document_id: uuid.UUID):
+    """Every earlier version of a document, newest first."""
+    user = require_user(request)
+    document, project, role = load_document(document_id, user)
+    return render(
+        request, "document_history.html",
+        project=project, role=role, document=document,
+        folders=repo.list_folders(str(project["id"])),
+        versions=repo.list_document_versions(str(document_id)),
+        can_edit=ROLE_RANK[role] >= ROLE_RANK[Role.MEMBER.value],
+    )
+
+
+@app.get("/documents/{document_id}/history/{version_id}")
+def document_version_page(request: Request, document_id: uuid.UUID, version_id: int):
+    user = require_user(request)
+    document, project, role = load_document(document_id, user)
+    version = repo.get_document_version(str(version_id), str(document_id))
+    if version is None:
+        raise StarletteHTTPException(404, "That version does not exist.")
+    return render(
+        request, "document_version.html",
+        project=project, role=role, document=document, version=version,
+        folders=repo.list_folders(str(project["id"])),
+        can_edit=ROLE_RANK[role] >= ROLE_RANK[Role.MEMBER.value],
+    )
+
+
+@app.post("/documents/{document_id}/history/{version_id}/restore")
+def restore_document_version(request: Request, document_id: uuid.UUID, version_id: int,
+                             csrf: str = Form("")):
+    """
+    Put an old version back.
+
+    This is an ordinary save, not a rewind: the version being replaced is
+    itself kept, so restoring can be undone the same way.
+    """
+    user = require_user(request)
+    check_csrf(request, csrf)
+    document, project, _role = load_document(document_id, user, Role.MEMBER.value)
+    version = repo.get_document_version(str(version_id), str(document_id))
+    if version is None:
+        raise StarletteHTTPException(404, "That version does not exist.")
+
+    repo.update_document(str(document_id), version["title"], version["body"],
+                         str(user["id"]))
+    repo.audit("document.restore", user_id=str(user["id"]), project_id=str(project["id"]),
+               detail={"document": str(document_id), "version": version_id})
+    flash(request, "Restored. The version you replaced is still in the history.")
     return RedirectResponse(f"/documents/{document_id}", status_code=303)
 
 
@@ -815,6 +934,76 @@ def review_page(request: Request, project_id: uuid.UUID):
                   can_edit=ROLE_RANK[role] >= ROLE_RANK[Role.MEMBER.value])
 
 
+@app.post("/projects/{project_id}/review/bulk")
+async def review_bulk(request: Request, project_id: uuid.UUID):
+    """
+    Confirm or reject several proposals at once.
+
+    A review queue holding forty suggestions from one meeting is not reviewed
+    one button at a time; it is abandoned. The ids come from checkboxes, so
+    they are caller-supplied and every one is checked against this project
+    before anything moves - a crafted form cannot reach into another project.
+
+    An id that cannot legally make the move is skipped rather than failing the
+    whole batch, and the count of each outcome is reported.
+    """
+    user = require_user(request)
+    form = await request.form()
+    check_csrf(request, str(form.get("csrf", "")))
+    load_project(project_id, user, Role.MEMBER.value)
+    target = f"/projects/{project_id}/review"
+
+    action = str(form.get("action", ""))
+    new_status = {"confirm": EventStatus.CONFIRMED.value,
+                  "reject": EventStatus.REJECTED.value}.get(action)
+    if new_status is None:
+        raise StarletteHTTPException(400, "Choose confirm or reject.")
+
+    chosen = [value for value in form.getlist("event_ids") if _looks_like_uuid(str(value))]
+    if not chosen:
+        flash(request, "Tick the ones you want to act on first.", "error")
+        return RedirectResponse(target, status_code=303)
+
+    moved = skipped = 0
+    for row in repo.events_for_bulk_review(str(project_id), [str(c) for c in chosen]):
+        if can_change_status(row["status"], new_status):
+            repo.change_event_status(str(row["id"]), new_status, str(user["id"]),
+                                     note="bulk review")
+            moved += 1
+        else:
+            skipped += 1
+
+    repo.audit("event.bulk_status", user_id=str(user["id"]), project_id=str(project_id),
+               detail={"action": action, "moved": moved, "skipped": skipped})
+    word = "Confirmed" if action == "confirm" else "Rejected"
+    message = f"{word} {moved}."
+    if skipped:
+        message += f" {skipped} could not move from where they were and were left alone."
+    flash(request, message)
+    return RedirectResponse(target, status_code=303)
+
+
+@app.get("/projects/{project_id}/sources")
+def sources_page(request: Request, project_id: uuid.UUID, kind: str = ""):
+    """
+    Everything brought into this project, and where each piece came from.
+
+    Worth its own page once connectors exist: "did a person put this here, or
+    did it arrive on its own?" is the first question asked of a proposal
+    nobody recognises.
+    """
+    user = require_user(request)
+    project, role = load_project(project_id, user)
+    return render(
+        request, "sources.html",
+        project=project, role=role,
+        folders=repo.list_folders(str(project_id)),
+        sources=repo.list_sources(str(project_id), limit=200, kind=kind),
+        counts=repo.count_sources_by_kind(str(project_id)),
+        kind_filter=kind if kind in ("upload", "api", "connector") else "",
+    )
+
+
 @app.post("/events/{event_id}/status")
 def change_status(request: Request, event_id: uuid.UUID, new_status: str = Form(...),
                   csrf: str = Form("")):
@@ -838,7 +1027,7 @@ def change_status(request: Request, event_id: uuid.UUID, new_status: str = Form(
 
 
 @app.get("/events/{event_id}")
-def event_page(request: Request, event_id: uuid.UUID):
+def event_page(request: Request, event_id: uuid.UUID, edit: int = 0):
     user = require_user(request)
     event = repo.get_event(str(event_id))
     if event is None:
@@ -849,12 +1038,48 @@ def event_page(request: Request, event_id: uuid.UUID):
                  if str(d["id"]) != str(event_id)]
     related = repo.get_event(str(event["related_id"])) if event["related_id"] else None
     source = repo.get_source(str(event["source_id"])) if event["source_id"] else None
+    can_edit = ROLE_RANK[role] >= ROLE_RANK[Role.MEMBER.value]
     return render(
         request, "event.html", project=project, role=role, e=event,
         history=repo.event_history(str(event_id)), decisions=decisions, related=related,
         source=source, folders=repo.list_folders(pid),
-        can_edit=ROLE_RANK[role] >= ROLE_RANK[Role.MEMBER.value],
+        revisions=repo.event_revisions(str(event_id)),
+        can_edit=can_edit, editing=bool(edit) and can_edit,
     )
+
+
+@app.post("/events/{event_id}/edit")
+def edit_event(request: Request, event_id: uuid.UUID, summary: str = Form(...),
+               detail: str = Form(""), owner: str = Form(""), due_date: str = Form(""),
+               source_ref: str = Form(""), csrf: str = Form("")):
+    """
+    Correct what an event says.
+
+    Only the words change. The status, the links and the source stay as they
+    are, so fixing a typo in a confirmed decision does not re-open it, and the
+    previous wording is kept so the correction is visible rather than silent.
+    """
+    user = require_user(request)
+    check_csrf(request, csrf)
+    event = repo.get_event(str(event_id))
+    if event is None:
+        raise StarletteHTTPException(404, "Event not found.")
+    project, _role = load_project(event["project_id"], user, Role.MEMBER.value)
+
+    if not summary.strip():
+        flash(request, "An event needs a one-line summary.", "error")
+        return RedirectResponse(f"/events/{event_id}?edit=1", status_code=303)
+
+    repo.update_event_text(
+        str(event_id),
+        summary=summary[:300], detail=detail[:4000],
+        owner=owner.strip()[:120] or None, due_date=parse_date(due_date),
+        source_ref=source_ref.strip()[:300], edited_by=str(user["id"]),
+    )
+    repo.audit("event.edit", user_id=str(user["id"]), project_id=str(project["id"]),
+               detail={"event": str(event_id)})
+    flash(request, "Saved. What it said before is in the history below.")
+    return RedirectResponse(f"/events/{event_id}", status_code=303)
 
 
 @app.post("/events/{event_id}/link")
@@ -1212,6 +1437,7 @@ def connectors_page(request: Request, project_id: uuid.UUID):
         intervals=CONNECTOR_INTERVALS,
         connectors_enabled=settings.connectors_enabled,
         ai_on=project["ai_extraction_enabled"],
+        base_url=settings.base_url.rstrip("/"),
     )
 
 
@@ -1237,18 +1463,31 @@ async def create_connector_submit(request: Request, project_id: uuid.UUID):
         flash(request, problem, "error")
         return RedirectResponse(target, status_code=303)
 
-    row = repo.create_connector(
-        project_id=str(project_id), kind=connector.kind,
-        name=str(form.get("name", "")).strip()[:120] or connector.label,
-        config=config,
-        secret_encrypted=crypto.encrypt_secret(settings.secret_key, secret or ""),
-        run_every_minutes=_interval(str(form.get("run_every_minutes", "60"))),
-        created_by=str(user["id"]),
-    )
+    name = str(form.get("name", "")).strip()[:120] or connector.label
+    if connector.inbound:
+        # Nothing to schedule. What it gets instead is a URL, and the code in
+        # that URL is the whole of its authentication - so it is made here,
+        # from the same generator as an invite code, never from the form.
+        row = repo.create_inbound_connector(
+            project_id=str(project_id), kind=connector.kind, name=name,
+            config=config, code=workspace.new_invite_code(), created_by=str(user["id"]),
+        )
+    else:
+        row = repo.create_connector(
+            project_id=str(project_id), kind=connector.kind, name=name,
+            config=config,
+            secret_encrypted=crypto.encrypt_secret(settings.secret_key, secret or ""),
+            run_every_minutes=_interval(str(form.get("run_every_minutes", "60"))),
+            created_by=str(user["id"]),
+        )
     # The config is recorded because it is not secret; the token is not.
     repo.audit("connector.create", user_id=str(user["id"]), project_id=str(project_id),
                detail={"kind": connector.kind, "config": config})
-    flash(request, f"{row['name']} added. The first check runs within a minute.")
+    if connector.inbound:
+        flash(request, f"{row['name']} added. Copy its URL below and give it to "
+                       "whatever will be posting.")
+    else:
+        flash(request, f"{row['name']} added. The first check runs within a minute.")
     return RedirectResponse(target, status_code=303)
 
 
@@ -1319,6 +1558,65 @@ def delete_connector_submit(request: Request, project_id: uuid.UUID, connector_i
                detail={"kind": row["kind"], "name": row["name"]})
     flash(request, f"{row['name']} removed. What it already brought in is still here.")
     return RedirectResponse(f"/projects/{project_id}/connectors", status_code=303)
+
+
+@app.post("/hooks/{code}")
+async def receive_webhook(request: Request, code: str):
+    """
+    Accept a note posted by something that is not a person.
+
+    This is the one route with no session and no CSRF token, because the
+    caller is a machine holding a secret in its URL rather than a browser
+    submitting a form. Three things follow from that, and all three are
+    deliberate:
+
+      * The code is the entire authentication. It is long and random, it is
+        revoked by deleting the connector, and it grants exactly one thing:
+        the right to add material to one project, for a person to review.
+      * A bad code gets the same 404 as an unknown path. Telling a caller that
+        a code exists but is disabled would let someone probe for live ones.
+      * Nothing here can create an event. The posted note lands in the review
+        queue like any upload, so the worst a leaked code buys is noise that a
+        person rejects - not a false entry in a team's memory.
+    """
+    if not settings.connectors_enabled:
+        raise StarletteHTTPException(404, "Not found.")
+
+    row = repo.get_connector_by_code(code)
+    connector = connectors.get(row["kind"]) if row else None
+    if row is None or connector is None or not connector.inbound:
+        raise StarletteHTTPException(404, "Not found.")
+
+    body = await request.body()
+    try:
+        result = connector.receive(connectors.Delivery(
+            content_type=request.headers.get("content-type", ""),
+            body=body,
+            config=dict(row["config"] or {}),
+            project_id=str(row["project_id"]),
+            connector_id=str(row["id"]),
+        ))
+    except connectors.ConnectorError as exc:
+        # A readable 400: whoever configured the caller has to be able to see
+        # what was wrong with what it sent.
+        raise StarletteHTTPException(400, str(exc)) from exc
+
+    stored = 0
+    for item in result.items:
+        # No external_id: a webhook has no stable identifier for what it sends,
+        # and the same deploy summary may legitimately be posted twice. The
+        # unique index only covers a non-empty one, so each delivery is its own
+        # source rather than being refused as a duplicate.
+        repo.create_inbound_source(
+            project_id=str(row["project_id"]), connector_id=str(row["id"]),
+            filename=item.title, content=item.content,
+        )
+        stored += 1
+    repo.record_inbound(str(row["id"]), result.note or f"Received {stored} note(s).")
+    repo.audit("connector.receive", project_id=str(row["project_id"]),
+               detail={"connector": str(row["id"]), "items": stored})
+    return {"ok": True, "stored": stored,
+            "note": "It will appear in the project's Review screen for a person to confirm."}
 
 
 # =====================================================================

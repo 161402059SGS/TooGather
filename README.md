@@ -6,7 +6,7 @@ Every project team loses track of the same things: a decision made three meeting
 
 It works for any kind of project: software and ERP implementations, agencies, construction, events, consulting.
 
-> Status: **v0.2, early.** It works end to end and is ready for a pilot on a real project. Expect rough edges and breaking changes before 1.0.
+> Status: **v0.3, early.** It works end to end and is ready for a pilot on a real project. Expect rough edges and breaking changes before 1.0.
 
 ## What it does
 
@@ -151,6 +151,34 @@ it. Open **Connectors** in a project you own to set one up.
 **A connector never writes project memory.** It creates the same kind of note an upload creates,
 and a person still confirms what comes out of it. That is the whole point of the design.
 
+### Webhook
+
+Anything that can make an HTTP request can post a note: a CI pipeline, a deploy
+script, Jira's own outgoing webhooks, an automation tool. Add the connector and
+it gives you a URL to paste into whatever will be calling it.
+
+```bash
+curl -X POST https://your-server/hooks/<code> \
+  -H 'Content-Type: application/json' \
+  -d '{"title": "Deploy 1.4.2", "content": "Batch numbering is live."}'
+```
+
+Plain text works too, and so does any JSON at all — a document it does not
+recognise is written out as readable text rather than a wall of braces. The URL
+is the whole of its authentication, so treat it like a password; deleting the
+connector revokes it. What arrives still goes to Review for a person to confirm.
+
+### Email
+
+Point it at an IMAP mailbox — ideally one that exists for the project, like a
+`+warehouse` alias the team forwards client mail to — and each new message
+arrives as a note carrying the sender, date, subject and body. A reply is cut
+at the point where it starts quoting the message before it, so a ten-message
+thread does not arrive ten times over.
+
+TLS is required. Use an app password, never the account's real one; it is
+stored encrypted like any other connector secret.
+
 ### Git
 
 Point it at a repository and it checks for new commits, then writes them up — hash, author,
@@ -175,7 +203,9 @@ whatever any project has configured.
 
 ### Writing your own
 
-A connector is one class with one method. See the module docstring in
+A connector either **asks** (implements `fetch`, and the worker calls it on a
+schedule) or **is told** (sets `inbound = True`, implements `receive`, and gets
+a URL instead of an interval). Either way it is one class with one method. See the module docstring in
 [`toogather/connectors/base.py`](toogather/connectors/base.py) for the interface and the rules,
 and [`toogather/connectors/git.py`](toogather/connectors/git.py) for a complete example.
 
@@ -264,8 +294,9 @@ Honest list, so you can decide whether it fits:
 - **There are no passwords.** Anyone who can reach the server can claim any name and join any project whose invite link they hold. That is deliberate for a team tool on a trusted network — run it on your LAN or behind a VPN, and put real authentication in front of it before exposing it to the internet.
 - A scanned PDF has no text to read. TooGather says so rather than importing an empty note; run it through OCR first.
 - Documents are edited as raw Markdown in a textarea. There is no rich-text editor, and no live preview yet.
-- Documents have no version history. Events do; documents are last-write-wins, so two people editing the same page at once will overwrite each other.
-- Git is the only connector that ships. The framework is there for more.
+- Document history shows versions side by side; there is no diff view yet.
+- The webhook endpoint is not rate limited. The code in its URL is long and random, but a leaked one can be used to fill a review queue with noise until an owner deletes the connector.
+- Git, email and a webhook are the connectors that ship. The framework is there for more.
 - Search is keyword full-text search, not semantic search.
 - Stored secrets — per-project API keys, connector tokens — are encrypted with a key derived from `SECRET_KEY`. That protects a database dump or a stolen backup. It does not protect against anyone who can already read the server's environment.
 

@@ -59,10 +59,12 @@
       <h3>{{ c.name }}</h3>
       <span class="badge">{{ c.kind }}</span>
       <span class="status-dot status-{{ c.last_status }}">
-        {%- if c.last_status == 'ok' %}Last check succeeded
-        {%- elif c.last_status == 'failed' %}Last check failed
+        {%- if c.last_status == 'ok' %}
+          {{ 'Last call accepted' if not c.polls else 'Last check succeeded' }}
+        {%- elif c.last_status == 'failed' %}
+          {{ 'Last call failed' if not c.polls else 'Last check failed' }}
         {%- elif c.last_status == 'running' %}Checking now
-        {%- else %}Not checked yet{% endif -%}
+        {%- else %}{{ 'Not called yet' if not c.polls else 'Not checked yet' }}{% endif -%}
       </span>
       {% if not c.enabled %}<span class="badge warn">Paused</span>{% endif %}
     </div>
@@ -70,10 +72,28 @@
     <p class="connector-note">
       {% if c.last_note %}{{ c.last_note }}{% else %}No result yet.{% endif %}
       {% if c.last_run_at %}
-        · Last checked {{ c.last_run_at.strftime('%d %b %Y, %H:%M') }} UTC
+        · Last {{ 'called' if not c.polls else 'checked' }}
+        {{ c.last_run_at.strftime('%d %b %Y, %H:%M') }} UTC
       {% endif %}
       · {{ c.source_count }} note{{ '' if c.source_count == 1 else 's' }} brought in
     </p>
+
+    {% if c.inbound_code %}
+      {#- The URL is the whole of this connector's authentication, so it is
+          shown only to owners, who are the only people who can reach this
+          page at all. Deleting the connector revokes it. -#}
+      <label class="small muted" for="hook-{{ c.id }}">
+        Post to this URL. Treat it like a password.
+      </label>
+      <input class="hook-url" id="hook-{{ c.id }}" type="text" readonly
+             value="{{ base_url }}/hooks/{{ c.inbound_code }}">
+      <p class="hint">
+        <code>curl -X POST {{ base_url }}/hooks/{{ c.inbound_code }}
+        -H 'Content-Type: application/json'
+        -d '{"title": "Deploy 1.4.2", "content": "..."}'</code>
+        — or post plain text, or any JSON at all.
+      </p>
+    {% endif %}
 
     {% if spec is none %}
       <p class="form-error">
@@ -115,21 +135,23 @@
           </div>
         {% endfor %}
 
-        <div class="field">
-          <label for="every-{{ c.id }}">How often</label>
-          <select id="every-{{ c.id }}" name="run_every_minutes">
-            {% for minutes, label in intervals %}
-              <option value="{{ minutes }}"
-                      {% if minutes == c.run_every_minutes %}selected{% endif %}>
-                {{ label }}
-              </option>
-            {% endfor %}
-          </select>
-        </div>
+        {% if c.polls %}
+          <div class="field">
+            <label for="every-{{ c.id }}">How often</label>
+            <select id="every-{{ c.id }}" name="run_every_minutes">
+              {% for minutes, label in intervals %}
+                <option value="{{ minutes }}"
+                        {% if minutes == c.run_every_minutes %}selected{% endif %}>
+                  {{ label }}
+                </option>
+              {% endfor %}
+            </select>
+          </div>
+        {% endif %}
 
         <label class="checkbox">
           <input type="checkbox" name="enabled" {% if c.enabled %}checked{% endif %}>
-          Check on this schedule
+          {{ "Accept posts to this URL" if not c.polls else "Check on this schedule" }}
         </label>
 
         <div class="btn-row">
@@ -138,15 +160,17 @@
       </form>
 
       <div class="btn-row">
-        <form method="post" action="/projects/{{ project.id }}/connectors/{{ c.id }}/run">
-          <input type="hidden" name="csrf" value="{{ csrf_token }}">
-          {#- A paused connector is never claimed by the worker, so asking for
-              a check now would queue something that never runs. -#}
-          <button class="secondary" type="submit"
-                  {% if c.last_status == 'running' or not c.enabled %}disabled{% endif %}>
-            Check now
-          </button>
-        </form>
+        {% if c.polls %}
+          <form method="post" action="/projects/{{ project.id }}/connectors/{{ c.id }}/run">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            {#- A paused connector is never claimed by the worker, so asking for
+                a check now would queue something that never runs. -#}
+            <button class="secondary" type="submit"
+                    {% if c.last_status == 'running' or not c.enabled %}disabled{% endif %}>
+              Check now
+            </button>
+          </form>
+        {% endif %}
         <form method="post" action="/projects/{{ project.id }}/connectors/{{ c.id }}/delete">
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
           <button class="danger" type="submit">Remove</button>
@@ -194,16 +218,23 @@
         </div>
       {% endfor %}
 
-      <div class="field">
-        <label for="new-every-{{ spec.kind }}">How often</label>
-        <select id="new-every-{{ spec.kind }}" name="run_every_minutes">
-          {% for minutes, label in intervals %}
-            <option value="{{ minutes }}" {% if minutes == 60 %}selected{% endif %}>
-              {{ label }}
-            </option>
-          {% endfor %}
-        </select>
-      </div>
+      {% if spec.inbound %}
+        <p class="hint">
+          Nothing to schedule: this one waits to be called. Adding it gives you
+          a URL to paste into whatever will be posting.
+        </p>
+      {% else %}
+        <div class="field">
+          <label for="new-every-{{ spec.kind }}">How often</label>
+          <select id="new-every-{{ spec.kind }}" name="run_every_minutes">
+            {% for minutes, label in intervals %}
+              <option value="{{ minutes }}" {% if minutes == 60 %}selected{% endif %}>
+                {{ label }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+      {% endif %}
 
       <button type="submit">Add {{ spec.label }}</button>
     </form>

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}History | {{ document.title }}{% endblock %}
+
+{#- Every earlier version of a document. The newest text always lives on the
+    document itself, so this list is purely what came before - an empty list
+    means nobody has edited it since it was created. -#}
+{% block content %}
+  <nav class="breadcrumb" aria-label="Breadcrumb">
+    <a href="/projects/{{ project.id }}">{{ project.name }}</a>
+    <span class="sep">/</span>
+    <a href="/documents/{{ document.id }}">{{ document.title }}</a>
+    <span class="sep">/</span>
+    <span>History</span>
+  </nav>
+
+  <h1>History</h1>
+  <p class="lead">What this document said before each save.</p>
+
+  <div class="doc-list">
+    <div class="doc-row is-current">
+      <span class="doc-name">{{ document.title }} <span class="badge ok">now</span></span>
+      <span class="doc-when">
+        Saved {{ document.updated_at.strftime('%d %b %Y at %H:%M') }}
+      </span>
+    </div>
+    {% for v in versions %}
+      <a class="doc-row" href="/documents/{{ document.id }}/history/{{ v.id }}">
+        <span class="doc-name">{{ v.title }}</span>
+        <span class="doc-when">
+          {{ v.created_at.strftime('%d %b %Y at %H:%M') }}
+          {%- if v.edited_by_name %} · {{ v.edited_by_name }}{% endif %}
+          · {{ v.size }} characters
+        </span>
+      </a>
+    {% endfor %}
+  </div>
+
+  {% if not versions %}
+    <p class="muted small">
+      This document has not been edited since it was created, so there is
+      nothing earlier to show.
+    </p>
+  {% endif %}
+{% endblock %}

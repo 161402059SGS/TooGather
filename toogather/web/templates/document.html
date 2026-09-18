@@ -20,27 +20,66 @@
   </nav>
 
   {% if editing %}
+    {#- On an ordinary edit these are undefined, and an Undefined is not None,
+        so they are resolved once here rather than tested inline - getting that
+        test wrong blanks the textarea. -#}
+    {% set draft_title = draft_title if draft_title is defined else none %}
+    {% set draft_body  = draft_body  if draft_body  is defined else none %}
+
+    {#- `conflict` means somebody saved while this person was typing. Their
+        text is still in the box; what changed underneath is shown beside it,
+        and saving again goes through because the form now carries the newer
+        timestamp. Nothing is thrown away on their behalf. -#}
+    {% if conflict %}
+      <div class="flash warning" role="alert">
+        <strong>Somebody else saved this page while you were editing.</strong>
+        Your text is still below, exactly as you left it. Their version is
+        shown underneath so you can merge anything you need before saving —
+        saving now replaces theirs.
+      </div>
+    {% endif %}
+
     <form method="post" action="/documents/{{ document.id }}">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      {#- The version this form was built from. If it has moved on by the time
+          it is submitted, the save is refused rather than silently winning. -#}
+      <input type="hidden" name="expected_updated_at"
+             value="{{ document.updated_at.isoformat() }}">
       <label class="visually-hidden" for="title">Title</label>
       <input class="editor-title" id="title" name="title" type="text"
-             required maxlength="200" value="{{ document.title }}">
+             required maxlength="200" value="{{ draft_title or document.title }}">
       <label class="visually-hidden" for="body">Markdown</label>
       <textarea class="editor-body" id="body" name="body"
-                spellcheck="false">{{ document.body }}</textarea>
+                spellcheck="false">{{ document.body if draft_body is none else draft_body }}</textarea>
       <div class="editor-bar">
-        <button type="submit">Save</button>
+        <button type="submit">{{ "Save anyway" if conflict else "Save" }}</button>
         <a class="btn secondary" href="/documents/{{ document.id }}">Cancel</a>
         <span class="spacer"></span>
         <span class="small faint">Markdown. Raw HTML is shown as text, not run.</span>
       </div>
     </form>
+
+    {% if conflict %}
+      <div class="section-head">
+        <h2>What is saved right now</h2>
+        <span class="small faint">
+          by {{ document.updated_by_name or 'someone else' }},
+          {{ document.updated_at.strftime('%H:%M') }}
+        </span>
+      </div>
+      <article class="prose conflict-other">{{ document.body | markdown }}</article>
+    {% endif %}
   {% else %}
     <div class="doc-head">
       <h1>{{ document.title }}</h1>
       <div class="btn-row">
         {% if document.doc_kind == 'skill' %}
           <a class="btn secondary" href="/projects/{{ project.id }}/skill.md">Download</a>
+        {% endif %}
+        {% if version_count %}
+          <a class="btn secondary" href="/documents/{{ document.id }}/history">
+            History ({{ version_count }})
+          </a>
         {% endif %}
         {% if can_edit %}
           <a class="btn" href="/documents/{{ document.id }}?edit=1">Edit</a>

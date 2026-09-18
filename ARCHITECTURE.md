@@ -9,7 +9,8 @@ flowchart TD
     subgraph Sources
         U[Uploads: notes, transcripts,<br/>WhatsApp exports, Word, PDF]
         A[Scripts and AI agents via API]
-        C[Connectors<br/>e.g. a Git repository]
+        C[Connectors that ask<br/>Git, an email mailbox]
+        H[Connectors that are told<br/>a webhook]
     end
 
     subgraph Server["TooGather server (self-hosted)"]
@@ -31,6 +32,7 @@ flowchart TD
     Q --> WK
     WK -- "on a schedule" --> C
     C -- "notes, never events" --> Q
+    H -- "POST /hooks/code" --> W
     WK -- "only if project allows" --> LLM
     WK -- proposed events --> DB
     W <--> DB
@@ -51,7 +53,7 @@ flowchart TD
 | Workspace setup | `toogather/workspace.py` | Seeds a new project's folders, charter and `SKILL.md`; slugs and invite codes |
 | Project types | `toogather/project_types.py` | Which folders, charter prompts and `SKILL.md` a project type starts with |
 | Importers | `toogather/importers/` | Turns an uploaded file into text: WhatsApp exports, Word, PDF |
-| Connectors | `toogather/connectors/` | The connector interface, the registry, and the Git connector |
+| Connectors | `toogather/connectors/` | The connector interface and registry, and the Git, email and webhook connectors |
 | Stored secrets | `toogather/crypto.py` | Encrypts per-project AI keys and connector tokens |
 | Markdown | `toogather/web/markdown.py` | Renders document Markdown with raw HTML disabled |
 | Worker | `toogather/worker.py` | Processes sources, runs due connectors, sends digests |
@@ -88,6 +90,8 @@ erDiagram
     projects ||--o{ folders : has
     folders ||--o{ documents : holds
     projects ||--o{ documents : "charter and SKILL.md"
+    documents ||--o{ document_versions : "used to say"
+    events ||--o{ event_revisions : "used to say"
     projects ||--o{ connectors : "pulls material via"
     connectors ||--o{ sources : "brought in"
     projects ||--o| project_ai_settings : "may override"
@@ -160,6 +164,45 @@ Three consequences are worth knowing:
 - **Runs happen in the worker, never in a request.** A web request must not wait
   on a network fetch of unknown length, so "Check now" only marks a connector
   due; the worker picks it up within about half a minute.
+
+### A connector either asks or is told
+
+The Git and email connectors poll: the worker calls `fetch` on their schedule.
+A webhook cannot, because nothing is there to be asked - something else decides
+when to call. So `Connector` has two methods and connectors implement exactly
+one, with `inbound` saying which.
+
+That flag is stored on the row as `polls`, not inferred from the kind, for one
+reason: the worker's "what is due?" query is SQL, and it must not claim a
+connector that has nothing to check. A connector marked `running` for a check
+nobody asked for would sit there until the worker restarted and then report a
+failure that never happened.
+
+The webhook is deliberately the least clever connector in the tree. It has no
+signature scheme, because TooGather does not know what is calling - GitHub
+signs one way, Stripe another, a shell script not at all - and the common case
+here is the shell script. What it has instead is a long random code in its URL,
+the same shape of capability as an invite link, revoked by deleting the
+connector. That is honest about what it is, and what it grants is small enough
+to be worth it: the right to add something to a review queue.
+
+### Writing is kept, not overwritten
+
+Events have had a history since 001. The pages people actually write in did
+not, and "last write wins" meant two people editing one charter silently lost
+one of the two.
+
+Both now keep what came before, in the same shape: a row written *before* each
+save holding what the thing said until then. The newest text always lives on
+the main table, so history is purely additive and reading the current version
+never touches it.
+
+Documents also carry the version they were rendered from into the form. If it
+has moved on by the time the form comes back, the save is refused and both
+texts are shown. This is optimistic concurrency, and it is the right trade for
+this app: conflicts are rare, locking a page a colleague has open is worse than
+a rare conflict screen, and the one thing that must not happen - work
+disappearing without anyone noticing - is exactly what it prevents.
 
 ### A project type, not a fixed set of folders
 
@@ -240,6 +283,20 @@ The MCP bridge runs on the user's computer and calls the REST API with that user
 
 Uploads are processed before connectors, because somebody is waiting for an
 upload they just made and nobody is watching a repository poll.
+
+## Request flow: a webhook delivery
+
+1. Something posts to `/hooks/<code>`. No session, no CSRF: the caller is a
+   machine holding a secret in a URL.
+2. The code is looked up. Unknown, disabled, or a kind this server does not
+   have, all give the same 404 as any unknown path.
+3. The connector's `receive` is handed the raw body. It parses defensively and
+   raises `ConnectorError` for anything malformed, which becomes a readable
+   400 in JSON.
+4. What comes back is written as a `sources` row with no `external_id` - a
+   webhook has no stable identifier, and posting the same summary twice is a
+   legitimate thing to do.
+5. From there it is the upload flow again.
 
 ## Extending TooGather
 

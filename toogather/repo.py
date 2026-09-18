@@ -297,21 +297,44 @@ def create_connector_source(project_id: str, connector_id: str, external_id: str
     )
 
 
-def list_sources(project_id: str, limit: int = 20) -> list[dict]:
-    return db.fetch_all(
-        """
+def list_sources(project_id: str, limit: int = 20, kind: str = "") -> list[dict]:
+    """
+    What has been brought into this project, newest first.
+
+    `kind` narrows it to one origin - 'upload', 'api' or 'connector' - for the
+    page that answers "which of this did a person put here, and which arrived
+    on its own?". An unknown kind is ignored rather than returning nothing,
+    because it can only come from a query string.
+    """
+    conditions = ["s.project_id = %(project_id)s"]
+    params: dict = {"project_id": project_id, "limit": limit}
+    if kind in ("upload", "api", "connector"):
+        conditions.append("s.kind = %(kind)s")
+        params["kind"] = kind
+
+    # The WHERE clause is built only from fixed strings above; user values are
+    # always passed as parameters.
+    sql = f"""
         SELECT s.id, s.filename, s.status, s.status_note, s.created_at, s.processed_at,
-               s.kind, u.display_name AS uploaded_by_name, c.name AS connector_name,
+               s.kind, s.external_id, u.display_name AS uploaded_by_name,
+               c.name AS connector_name, c.kind AS connector_kind,
                (SELECT count(*) FROM events e WHERE e.source_id = s.id) AS event_count
         FROM sources s
         LEFT JOIN users u ON u.id = s.uploaded_by
         LEFT JOIN connectors c ON c.id = s.connector_id
-        WHERE s.project_id = %s
+        WHERE {" AND ".join(conditions)}
         ORDER BY s.created_at DESC
-        LIMIT %s
-        """,
-        (project_id, limit),
+        LIMIT %(limit)s
+    """
+    return db.fetch_all(sql, params)
+
+
+def count_sources_by_kind(project_id: str) -> dict[str, int]:
+    rows = db.fetch_all(
+        "SELECT kind, count(*) AS n FROM sources WHERE project_id = %s GROUP BY kind",
+        (project_id,),
     )
+    return {row["kind"]: int(row["n"]) for row in rows}
 
 
 def get_source(source_id: str) -> dict | None:
@@ -732,7 +755,16 @@ def create_document(project_id: str, folder_id: str | None, title: str,
 
 
 def get_document(document_id: str) -> dict | None:
-    return db.fetch_one("SELECT * FROM documents WHERE id = %s", (document_id,))
+    """One document, with the name of whoever saved it last."""
+    return db.fetch_one(
+        """
+        SELECT d.*, u.display_name AS updated_by_name
+        FROM documents d
+        LEFT JOIN users u ON u.id = d.updated_by
+        WHERE d.id = %s
+        """,
+        (document_id,),
+    )
 
 
 def list_documents(folder_id: str) -> list[dict]:
@@ -746,15 +778,77 @@ def list_documents(folder_id: str) -> list[dict]:
     )
 
 
-def update_document(document_id: str, title: str, body: str, updated_by: str | None) -> None:
-    db.execute(
+def update_document(document_id: str, title: str, body: str, updated_by: str | None,
+                    expected_updated_at: datetime | None = None) -> bool:
+    """
+    Save a document, keeping what it said before.
+
+    Returns False when `expected_updated_at` is given and no longer matches,
+    which means somebody else saved while this person was typing. Nothing is
+    written in that case: the caller shows both versions rather than picking a
+    winner silently, which is what "last write wins" did before.
+
+    The previous text is copied into document_versions inside the same
+    transaction, so a version row can never exist for a save that did not
+    happen, nor a save happen without its version.
+    """
+    with db.transaction() as conn:
+        current = conn.execute(
+            "SELECT title, body, updated_at, updated_by FROM documents WHERE id = %s FOR UPDATE",
+            (document_id,),
+        ).fetchone()
+        if current is None:
+            return False
+        if expected_updated_at is not None and current["updated_at"] != expected_updated_at:
+            return False
+
+        conn.execute(
+            """
+            INSERT INTO document_versions (document_id, title, body, edited_by)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (document_id, current["title"], current["body"], current["updated_by"]),
+        )
+        conn.execute(
+            """
+            UPDATE documents
+            SET title = %s, body = %s, updated_by = %s, updated_at = now()
+            WHERE id = %s
+            """,
+            (title.strip(), body, updated_by, document_id),
+        )
+    return True
+
+
+def list_document_versions(document_id: str, limit: int = 50) -> list[dict]:
+    """Previous versions, newest first, with who saved each one."""
+    return db.fetch_all(
         """
-        UPDATE documents
-        SET title = %s, body = %s, updated_by = %s, updated_at = now()
-        WHERE id = %s
+        SELECT v.id, v.title, v.created_at, length(v.body) AS size,
+               u.display_name AS edited_by_name
+        FROM document_versions v
+        LEFT JOIN users u ON u.id = v.edited_by
+        WHERE v.document_id = %s
+        ORDER BY v.id DESC
+        LIMIT %s
         """,
-        (title.strip(), body, updated_by, document_id),
+        (document_id, limit),
     )
+
+
+def get_document_version(version_id: str, document_id: str) -> dict | None:
+    """One version. document_id is in the WHERE clause so ids cannot cross over."""
+    return db.fetch_one(
+        "SELECT * FROM document_versions WHERE id = %s AND document_id = %s",
+        (version_id, document_id),
+    )
+
+
+def count_document_versions(document_id: str) -> int:
+    row = db.fetch_one(
+        "SELECT count(*) AS n FROM document_versions WHERE document_id = %s", (document_id,)
+    )
+    return int(row["n"]) if row else 0
 
 
 def delete_document(document_id: str) -> None:
@@ -1008,7 +1102,9 @@ def claim_due_connector() -> dict | None:
     reason: two workers must never run one connector at the same moment, and
     the database is a good enough queue that no other service is needed.
 
-    A connector that has never run (last_run_at IS NULL) goes first.
+    A connector that has never run (last_run_at IS NULL) goes first. An
+    inbound connector is never claimed: it has nothing to check, and marking
+    it "running" would leave it reporting a failure it was not asked for.
     """
     return db.fetch_one(
         """
@@ -1017,6 +1113,7 @@ def claim_due_connector() -> dict | None:
         WHERE c.id = (
             SELECT id FROM connectors
             WHERE enabled
+              AND polls
               AND last_status <> 'running'
               AND (last_run_at IS NULL
                    OR last_run_at < now() - make_interval(mins => run_every_minutes))
@@ -1061,3 +1158,171 @@ def release_running_connectors() -> int:
             """
         )
         return cur.rowcount
+
+
+# =====================================================================
+# Event text, and the revisions of it
+#
+# Status changes live in event_history; the words live here. They answer
+# different questions - "who agreed this was true?" and "who changed what
+# it says?" - and keeping them apart keeps both readable.
+# =====================================================================
+
+
+def update_event_text(
+    event_id: str,
+    *,
+    summary: str,
+    detail: str,
+    owner: str | None,
+    due_date: date | None,
+    source_ref: str,
+    edited_by: str | None,
+) -> dict | None:
+    """
+    Correct what an event says, keeping what it said before.
+
+    Only the words change: an event's status, its links and its source are
+    untouched, so correcting a typo in a confirmed decision does not quietly
+    re-open it.
+    """
+    with db.transaction() as conn:
+        current = conn.execute(
+            "SELECT * FROM events WHERE id = %s FOR UPDATE", (event_id,)
+        ).fetchone()
+        if current is None:
+            return None
+
+        unchanged = (
+            current["summary"] == summary.strip()
+            and current["detail"] == detail.strip()
+            and (current["owner"] or "") == (owner or "")
+            and current["due_date"] == due_date
+            and current["source_ref"] == source_ref.strip()
+        )
+        if unchanged:
+            return current      # nothing to record, and no empty revision row
+
+        conn.execute(
+            """
+            INSERT INTO event_revisions
+                (event_id, summary, detail, owner, due_date, source_ref, edited_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (event_id, current["summary"], current["detail"], current["owner"],
+             current["due_date"], current["source_ref"], edited_by),
+        )
+        return conn.execute(
+            """
+            UPDATE events
+            SET summary = %s, detail = %s, owner = %s, due_date = %s,
+                source_ref = %s, updated_at = now()
+            WHERE id = %s
+            RETURNING *
+            """,
+            (summary.strip(), detail.strip(), owner or None, due_date,
+             source_ref.strip(), event_id),
+        ).fetchone()
+
+
+def event_revisions(event_id: str, limit: int = 50) -> list[dict]:
+    """What this event used to say, newest first."""
+    return db.fetch_all(
+        """
+        SELECT r.*, u.display_name AS edited_by_name
+        FROM event_revisions r
+        LEFT JOIN users u ON u.id = r.edited_by
+        WHERE r.event_id = %s
+        ORDER BY r.id DESC
+        LIMIT %s
+        """,
+        (event_id, limit),
+    )
+
+
+def events_for_bulk_review(project_id: str, event_ids: list[str]) -> list[dict]:
+    """
+    The subset of these ids that really belong to this project.
+
+    The ids come from checkboxes on a page, so they are caller-supplied. This
+    is what stops a crafted form from moving an event in somebody else's
+    project: anything not in this project simply is not returned.
+    """
+    if not event_ids:
+        return []
+    return db.fetch_all(
+        "SELECT id, status, summary FROM events WHERE project_id = %s AND id = ANY(%s)",
+        (project_id, event_ids),
+    )
+
+
+# =====================================================================
+# Connectors, continued
+# =====================================================================
+
+
+def create_inbound_connector(project_id: str, kind: str, name: str, config: dict,
+                             code: str, created_by: str | None) -> dict:
+    """
+    A connector that is posted to rather than checked.
+
+    `polls` is FALSE so the worker never claims it, and the code is what its
+    URL carries. Stored in plain text on purpose, like an invite code: an
+    owner has to be able to read it back to paste it into whatever calls it.
+    """
+    return db.fetch_one(
+        """
+        INSERT INTO connectors (project_id, kind, name, config, polls, inbound_code,
+                                run_every_minutes, created_by)
+        VALUES (%s, %s, %s, %s::jsonb, FALSE, %s, 0, %s)
+        RETURNING *
+        """,
+        (project_id, kind, name.strip(), json.dumps(config), code, created_by),
+    )
+
+
+def get_connector_by_code(code: str) -> dict | None:
+    """Find an enabled inbound connector from the code in its URL."""
+    return db.fetch_one(
+        """
+        SELECT * FROM connectors
+        WHERE inbound_code = %s AND NOT polls AND enabled
+        """,
+        (code,),
+    )
+
+
+def record_inbound(connector_id: str, note: str) -> None:
+    """Note that an inbound connector was called, without claiming it ran."""
+    db.execute(
+        """
+        UPDATE connectors
+        SET last_run_at = now(), last_status = 'ok', last_note = %s
+        WHERE id = %s
+        """,
+        (note[:1000], connector_id),
+    )
+
+
+def create_inbound_source(project_id: str, connector_id: str,
+                          filename: str, content: str) -> dict:
+    """
+    Store a note posted to an inbound connector.
+
+    No external_id, unlike material a polling connector brings in: a webhook
+    has no stable identifier for what it sends, and posting the same summary
+    twice is a legitimate thing to do. The unique index covers only a non-empty
+    external_id, so leaving it blank makes each delivery its own source instead
+    of the second one being refused.
+
+    uploaded_by is NULL because nobody was signed in - the connector is the
+    provenance, and the sources page shows it as such.
+    """
+    return db.fetch_one(
+        """
+        INSERT INTO sources (project_id, kind, filename, content, connector_id)
+        VALUES (%s, 'connector', %s, %s, %s)
+        RETURNING id, filename, status, created_at
+        """,
+        (project_id, filename[:200], content, connector_id),
+    )

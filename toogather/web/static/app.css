@@ -20,6 +20,9 @@
    10a. Small form pieces
    10b. Project type picker
    10c. Connectors
+   10d. Review queue
+   10e. Filter chips
+   10f. Document history
     11. Narrow screens
    ===================================================================== */
 
@@ -722,6 +725,90 @@ table.data tr:last-child td { border-bottom: 0; }
 .status-new     { color: var(--text-faint); }
 
 /* ---------------------------------------------------------------------
+   10d. Review queue: picking several at once
+   --------------------------------------------------------------------- */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border-firm);
+  border-radius: var(--radius);
+  background: var(--bg-sub);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.bulk-bar .spacer { flex: 1 1 auto; }
+.bulk-bar .checkbox { margin: 0; }
+
+/* A row is the checkbox plus the event card beside it. */
+.event-pick {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  list-style: none;
+}
+.event-pick > .checkbox { margin-top: 16px; }
+.event-pick > .events { flex: 1 1 auto; min-width: 0; }
+.events.flush { margin: 0; padding: 0; }
+
+/* ---------------------------------------------------------------------
+   10e. Filter chips, on the Material page
+   --------------------------------------------------------------------- */
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0 6px;
+}
+.chip {
+  display: inline-block;
+  padding: 5px 11px;
+  border: 1px solid var(--border-firm);
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--text-muted);
+  background: var(--bg);
+}
+.chip:hover { background: var(--bg-sub); text-decoration: none; }
+.chip.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ---------------------------------------------------------------------
+   10f. Document history and save conflicts
+   --------------------------------------------------------------------- */
+
+/* The version somebody else saved, shown under your own text so you can
+   merge from it rather than losing one of the two. */
+.conflict-other {
+  border-left: 3px solid var(--warn);
+  padding-left: 14px;
+  opacity: 0.9;
+}
+.doc-row.is-current { background: var(--bg-sub); }
+.doc-row.is-current .doc-name { font-weight: 600; }
+
+/* The webhook URL, which exists to be copied. */
+.hook-url {
+  display: block;
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-firm);
+  border-radius: var(--radius);
+  background: var(--bg-sub);
+  color: var(--text);
+  margin: 6px 0;
+}
+
+/* ---------------------------------------------------------------------
    11. Narrow screens
    --------------------------------------------------------------------- */
 @media (max-width: 860px) {
@@ -743,6 +830,7 @@ table.data tr:last-child td { border-bottom: 0; }
   .home { padding: 32px 16px 60px; min-height: 0; }
   .home-greeting { font-size: 24px; }
   .type-picker { grid-template-columns: 1fr; }
+  .bulk-bar { position: static; }
   .editor-title { font-size: 26px; }
   h1 { font-size: 27px; }
 }

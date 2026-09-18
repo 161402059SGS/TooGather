@@ -2,7 +2,54 @@
 {% block title %}{{ e.summary }} | TooGather{% endblock %}
 {% block content %}
 <p class="small"><a href="/projects/{{ project.id }}">{{ project.name }}</a></p>
+
+{% if editing %}
+  {#- Correcting the words, not the status. An event that was confirmed stays
+      confirmed: a typo in a decision is a typo, not a change of mind. -#}
+  <h2>Correct what this says</h2>
+  <p class="small muted">
+    The status, the links and the source stay as they are. What it says now is
+    kept, so the correction is visible rather than silent.
+  </p>
+  <form method="post" action="/events/{{ e.id }}/edit">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <div class="field">
+      <label for="summary">Summary</label>
+      <input id="summary" name="summary" type="text" required maxlength="300"
+             value="{{ e.summary }}">
+    </div>
+    <div class="field">
+      <label for="owner">Owner</label>
+      <input id="owner" name="owner" type="text" maxlength="120" value="{{ e.owner or '' }}">
+    </div>
+    <div class="field">
+      <label for="due_date">Due date</label>
+      <input id="due_date" name="due_date" type="date"
+             value="{{ e.due_date.isoformat() if e.due_date else '' }}">
+    </div>
+    <div class="field">
+      <label for="source_ref">Where did this come from?</label>
+      <input id="source_ref" name="source_ref" type="text" maxlength="300"
+             value="{{ e.source_ref }}">
+    </div>
+    <div class="field">
+      <label for="detail">Details</label>
+      <textarea id="detail" name="detail">{{ e.detail }}</textarea>
+    </div>
+    <div class="btn-row">
+      <button type="submit">Save</button>
+      <a class="btn secondary" href="/events/{{ e.id }}">Cancel</a>
+    </div>
+  </form>
+{% else %}
+
 <ul class="events">{% set compact = false %}{% include "_event_row.html" %}</ul>
+
+{% if can_edit %}
+  <div class="btn-row">
+    <a class="btn secondary" href="/events/{{ e.id }}?edit=1">Correct the wording</a>
+  </div>
+{% endif %}
 
 {% if e.detail %}<h2>Details</h2><p>{{ e.detail }}</p>{% endif %}
 
@@ -52,8 +99,28 @@
   </tbody>
 </table></div>
 
+{% if revisions %}
+  <h2>Earlier wording</h2>
+  <p class="small muted">What this event said before each correction.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>When</th><th>Summary</th><th>Owner</th><th>Due</th><th>By</th></tr></thead>
+    <tbody>
+    {% for r in revisions %}
+      <tr>
+        <td>{{ r.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{{ r.summary }}</td>
+        <td>{{ r.owner or '' }}</td>
+        <td>{{ r.due_date or '' }}</td>
+        <td>{{ r.edited_by_name or '' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+{% endif %}
+
 {% if source %}
   <h2>Source: {{ source.filename }}</h2>
   <pre class="source">{{ source.content[:20000] }}</pre>
+{% endif %}
 {% endif %}
 {% endblock %}

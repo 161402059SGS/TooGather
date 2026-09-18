@@ -2,13 +2,53 @@
 {% block title %}Review | {{ project.name }}{% endblock %}
 {% block content %}
 {% set active = 'review' %}{% include "_project_nav.html" %}
-<p class="muted">These were suggested from uploaded notes. Confirm what is correct and reject the rest.
-Only confirmed events count as project memory.</p>
+
+<h1>Review</h1>
+<p class="muted">
+  These were suggested from uploaded notes and from whatever your connectors
+  brought in. Confirm what is correct and reject the rest. Only confirmed
+  events count as project memory.
+</p>
+
 {% if events %}
-  <ul class="events">
-    {% for e in events %}{% include "_event_row.html" %}{% endfor %}
-  </ul>
+  {#- One form wraps the whole queue: the checkboxes and both buttons belong
+      to it, so a person can work down the list and act on everything they
+      ticked in one go. The per-row Confirm and Reject buttons still work on
+      their own for the common case of one obvious item. -#}
+  <form method="post" action="/projects/{{ project.id }}/review/bulk" id="bulk">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+
+    {% if can_edit %}
+      <div class="bulk-bar">
+        <label class="checkbox">
+          <input type="checkbox" id="pick-all"> Select all {{ events | length }}
+        </label>
+        <span class="spacer"></span>
+        <button type="submit" name="action" value="confirm">Confirm selected</button>
+        <button class="secondary" type="submit" name="action" value="reject">
+          Reject selected
+        </button>
+      </div>
+    {% endif %}
+
+    <ul class="events">
+      {% for e in events %}
+        <li class="event-pick">
+          {% if can_edit %}
+            <label class="checkbox">
+              <input type="checkbox" name="event_ids" value="{{ e.id }}"
+                     aria-label="Select: {{ e.summary }}">
+            </label>
+          {% endif %}
+          <ul class="events flush">{% include "_event_row.html" %}</ul>
+        </li>
+      {% endfor %}
+    </ul>
+  </form>
 {% else %}
-  <p class="muted">Nothing to review. Upload meeting notes on the overview page to get suggestions.</p>
+  <p class="muted">
+    Nothing to review. Upload meeting notes on the overview page, or set up a
+    <a href="/projects/{{ project.id }}/connectors">connector</a>, to get suggestions.
+  </p>
 {% endif %}
 {% endblock %}
