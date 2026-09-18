@@ -7,6 +7,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
+# git is what the Git connector runs. It is a few megabytes, and the
+# alternative - an API client per hosting service - is a great deal more code
+# for less coverage. ca-certificates lets it verify https remotes.
+RUN apt-get update \
+ && apt-get install --no-install-recommends -y git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Install dependencies first so Docker can cache this layer between code changes.
@@ -15,8 +22,13 @@ COPY toogather ./toogather
 RUN pip install .
 
 # Run as an unprivileged user, never as root.
-RUN useradd --create-home --uid 10001 toogather
+# /data holds the generated SECRET_KEY and the Git connector's mirrors; it is
+# created here so the volume mounted over it is already owned by this user.
+RUN useradd --create-home --uid 10001 toogather \
+ && mkdir -p /data \
+ && chown toogather:toogather /data
 USER toogather
+ENV TOOGATHER_DATA_DIR=/data
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

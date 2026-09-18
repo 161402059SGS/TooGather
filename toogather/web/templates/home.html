@@ -25,6 +25,21 @@
         <button type="submit" title="Create project" aria-label="Create project">→</button>
       </div>
     </div>
+
+    {#- The project type decides which folders appear and what the charter
+        asks. Radio buttons rather than a dropdown: there are four, and the
+        one-line description of each is the part worth reading. -#}
+    <fieldset class="type-picker">
+      <legend class="small faint">What kind of project is it?</legend>
+      {% for t in PROJECT_TYPES %}
+        <label class="type-option">
+          <input type="radio" name="template_kind" value="{{ t.kind }}"
+                 {% if loop.first %}checked{% endif %}>
+          <span class="type-label">{{ t.label }}</span>
+          <span class="type-tagline">{{ t.tagline }}</span>
+        </label>
+      {% endfor %}
+    </fieldset>
   </form>
 
   {% if projects %}

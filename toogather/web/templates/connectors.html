@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block title %}Connectors | {{ project.name }}{% endblock %}
+
+{#- Connectors: scheduled ways of bringing material into this project.
+
+    Two things this page has to be honest about, because both surprise
+    people otherwise:
+
+      * a connector never writes project memory directly. It creates the
+        same kind of note an upload creates, and a person still confirms
+        what comes out of it;
+      * with AI extraction off, what it brings in is stored and searchable
+        but nothing is proposed from it.
+
+    Secrets are write-only here. The page is told whether one is stored,
+    never what it is, so no version of this page can leak a token. -#}
+{% block content %}
+{% set active = 'connectors' %}{% include "_project_nav.html" %}
+
+<h1>Connectors</h1>
+<p class="lead">
+  Ways of bringing material in without anyone having to remember to upload it.
+</p>
+<p class="small muted">
+  A connector creates notes, not memory. What it finds goes to
+  <a href="/projects/{{ project.id }}/review">Review</a> as suggestions, exactly
+  like an upload, and a person confirms what is true.
+</p>
+
+{% if not connectors_enabled %}
+  <div class="flash warning" role="status">
+    Connectors are switched off for this whole server
+    (<code>CONNECTORS_ENABLED=false</code>). You can set one up, but nothing
+    will run until an administrator turns them back on.
+  </div>
+{% endif %}
+{% if not ai_on %}
+  <p class="hint">
+    AI extraction is off for this project, so material a connector brings in is
+    stored and searchable but nothing is proposed from it.
+    <a href="/projects/{{ project.id }}/settings">Change this in settings.</a>
+  </p>
+{% endif %}
+
+{# --- What is already set up ---------------------------------------- #}
+<div class="section-head">
+  <h2>Set up</h2>
+  <span class="small faint">{{ rows | length }}</span>
+</div>
+
+{% if not rows %}
+  <p class="muted small">Nothing yet. Add one below.</p>
+{% endif %}
+
+{% for c in rows %}
+  {% set spec = definition(c.kind) %}
+  <div class="connector">
+    <div class="connector-head">
+      <h3>{{ c.name }}</h3>
+      <span class="badge">{{ c.kind }}</span>
+      <span class="status-dot status-{{ c.last_status }}">
+        {%- if c.last_status == 'ok' %}Last check succeeded
+        {%- elif c.last_status == 'failed' %}Last check failed
+        {%- elif c.last_status == 'running' %}Checking now
+        {%- else %}Not checked yet{% endif -%}
+      </span>
+      {% if not c.enabled %}<span class="badge warn">Paused</span>{% endif %}
+    </div>
+
+    <p class="connector-note">
+      {% if c.last_note %}{{ c.last_note }}{% else %}No result yet.{% endif %}
+      {% if c.last_run_at %}
+        · Last checked {{ c.last_run_at.strftime('%d %b %Y, %H:%M') }} UTC
+      {% endif %}
+      · {{ c.source_count }} note{{ '' if c.source_count == 1 else 's' }} brought in
+    </p>
+
+    {% if spec is none %}
+      <p class="form-error">
+        This server no longer has a <code>{{ c.kind }}</code> connector, so this
+        one cannot run or be edited. Remove it, or reinstall the connector.
+      </p>
+      <form method="post" action="/projects/{{ project.id }}/connectors/{{ c.id }}/delete">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <button class="danger" type="submit">Remove</button>
+      </form>
+    {% else %}
+      <form method="post" action="/projects/{{ project.id }}/connectors/{{ c.id }}">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <div class="field">
+          <label for="name-{{ c.id }}">Name</label>
+          <input id="name-{{ c.id }}" name="name" type="text" maxlength="120"
+                 value="{{ c.name }}">
+        </div>
+
+        {% for f in spec.fields %}
+          <div class="field">
+            <label for="{{ f.name }}-{{ c.id }}">{{ f.label }}</label>
+            {% if f.secret %}
+              <input id="{{ f.name }}-{{ c.id }}" name="{{ f.name }}" type="password"
+                     autocomplete="off"
+                     placeholder="{{ 'Stored. Type a new one to replace it.'
+                                     if c.secret_encrypted else 'Not set' }}">
+              {% if c.secret_encrypted %}
+                <label class="checkbox small">
+                  <input type="checkbox" name="clear_{{ f.name }}"> Forget the stored one
+                </label>
+              {% endif %}
+            {% else %}
+              <input id="{{ f.name }}-{{ c.id }}" name="{{ f.name }}" type="text"
+                     value="{{ c.config.get(f.name, '') }}"
+                     placeholder="{{ f.placeholder }}">
+            {% endif %}
+            {% if f.help %}<span class="hint">{{ f.help }}</span>{% endif %}
+          </div>
+        {% endfor %}
+
+        <div class="field">
+          <label for="every-{{ c.id }}">How often</label>
+          <select id="every-{{ c.id }}" name="run_every_minutes">
+            {% for minutes, label in intervals %}
+              <option value="{{ minutes }}"
+                      {% if minutes == c.run_every_minutes %}selected{% endif %}>
+                {{ label }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <label class="checkbox">
+          <input type="checkbox" name="enabled" {% if c.enabled %}checked{% endif %}>
+          Check on this schedule
+        </label>
+
+        <div class="btn-row">
+          <button type="submit">Save</button>
+        </div>
+      </form>
+
+      <div class="btn-row">
+        <form method="post" action="/projects/{{ project.id }}/connectors/{{ c.id }}/run">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          {#- A paused connector is never claimed by the worker, so asking for
+              a check now would queue something that never runs. -#}
+          <button class="secondary" type="submit"
+                  {% if c.last_status == 'running' or not c.enabled %}disabled{% endif %}>
+            Check now
+          </button>
+        </form>
+        <form method="post" action="/projects/{{ project.id }}/connectors/{{ c.id }}/delete">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <button class="danger" type="submit">Remove</button>
+        </form>
+      </div>
+    {% endif %}
+  </div>
+{% endfor %}
+
+{# --- Adding a new one ----------------------------------------------- #}
+<div class="section-head"><h2>Add a connector</h2></div>
+
+{% if not available %}
+  <p class="muted small">This server has no connectors installed.</p>
+{% endif %}
+
+{% for spec in available %}
+  <div class="connector">
+    <div class="connector-head">
+      <h3>{{ spec.label }}</h3>
+      <span class="badge">{{ spec.kind }}</span>
+    </div>
+    <p class="connector-note">{{ spec.description }}</p>
+
+    <form method="post" action="/projects/{{ project.id }}/connectors">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="hidden" name="kind" value="{{ spec.kind }}">
+
+      <div class="field">
+        <label for="new-name-{{ spec.kind }}">Name</label>
+        <input id="new-name-{{ spec.kind }}" name="name" type="text" maxlength="120"
+               placeholder="{{ spec.label }}">
+        <span class="hint">What this one is called in the list above.</span>
+      </div>
+
+      {% for f in spec.fields %}
+        <div class="field">
+          <label for="new-{{ f.name }}-{{ spec.kind }}">
+            {{ f.label }}{% if not f.required %} <span class="faint">(optional)</span>{% endif %}
+          </label>
+          <input id="new-{{ f.name }}-{{ spec.kind }}" name="{{ f.name }}"
+                 type="{{ 'password' if f.secret else 'text' }}"
+                 autocomplete="off" placeholder="{{ f.placeholder }}">
+          {% if f.help %}<span class="hint">{{ f.help }}</span>{% endif %}
+        </div>
+      {% endfor %}
+
+      <div class="field">
+        <label for="new-every-{{ spec.kind }}">How often</label>
+        <select id="new-every-{{ spec.kind }}" name="run_every_minutes">
+          {% for minutes, label in intervals %}
+            <option value="{{ minutes }}" {% if minutes == 60 %}selected{% endif %}>
+              {{ label }}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <button type="submit">Add {{ spec.label }}</button>
+    </form>
+  </div>
+{% endfor %}
+{% endblock %}

@@ -1,24 +1,72 @@
 {% extends "base.html" %}
 {% block title %}People | TooGather{% endblock %}
-{% block content %}
-<h1>People</h1>
-<div class="table-wrap"><table>
-  <thead><tr><th>Name</th><th>Email</th><th>Admin</th><th>Created</th></tr></thead>
-  <tbody>
-  {% for u in users %}
-    <tr><td>{{ u.display_name }}</td><td>{{ u.email }}</td><td>{{ 'Yes' if u.is_admin else 'No' }}</td><td>{{ u.created_at.strftime('%Y-%m-%d') }}</td></tr>
-  {% endfor %}
-  </tbody>
-</table></div>
 
-<h2>Add a person</h2>
-<form method="post" action="/admin/users" class="narrow">
-  <input type="hidden" name="csrf" value="{{ csrf_token }}">
-  <label for="display_name">Name</label><input id="display_name" name="display_name" type="text" required>
-  <label for="email">Email</label><input id="email" name="email" type="email" required>
-  <label for="password">Temporary password</label><input id="password" name="password" type="password" required minlength="10" autocomplete="new-password">
-  <label class="checkbox"><input type="checkbox" name="is_admin"> Admin (can see every project)</label>
-  <p></p>
-  <button type="submit">Create account</button>
-</form>
+{#- There is no "add a person" form: people add themselves by opening the
+    app and typing a name. What an admin does here is grant admin rights and
+    switch leavers off. -#}
+{% block content %}
+  <h1>People</h1>
+  <p class="lead">
+    Everyone who has joined this server. People add themselves by opening the
+    app and typing a name; there are no accounts to create.
+  </p>
+
+  <div class="card">
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Projects</th>
+          <th scope="col">Admin</th>
+          <th scope="col">Joined</th>
+          <th scope="col"><span class="visually-hidden">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+          <tr>
+            <td>
+              <span class="avatar" aria-hidden="true">{{ u.display_name[:1] | upper }}</span>
+              {{ u.display_name }}
+              {% if u.id == user.id %}<span class="faint small">(you)</span>{% endif %}
+              {% if not u.is_active %}<span class="badge danger">off</span>{% endif %}
+              {% if u.email %}<div class="small faint">{{ u.email }}</div>{% endif %}
+            </td>
+            <td class="small">{{ u.project_count }}</td>
+            <td>
+              {% if u.is_admin %}<span class="badge owner">admin</span>
+              {% else %}<span class="faint small">—</span>{% endif %}
+            </td>
+            <td class="small faint">{{ u.created_at.strftime('%d %b %Y') }}</td>
+            <td>
+              <form class="role-form" method="post" action="/admin/users/{{ u.id }}">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <label class="visually-hidden" for="action-{{ u.id }}">
+                  Action for {{ u.display_name }}
+                </label>
+                <select id="action-{{ u.id }}" name="action">
+                  {% if u.is_admin %}
+                    <option value="revoke_admin">remove admin</option>
+                  {% else %}
+                    <option value="make_admin">make admin</option>
+                  {% endif %}
+                  {% if u.is_active %}
+                    <option value="deactivate">switch off</option>
+                  {% else %}
+                    <option value="reactivate">switch back on</option>
+                  {% endif %}
+                </select>
+                <button class="secondary" type="submit">Apply</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card role-legend">
+    <div><strong>Admin</strong> — runs the server: manages people and can let themselves into a project, which is recorded. Being an admin does <em>not</em> put them on every team.</div>
+    <div><strong>Switched off</strong> — cannot use the app. Their name stays on what they wrote, so history is not blanked out.</div>
+  </div>
 {% endblock %}

@@ -10,6 +10,8 @@ Layout of this file (search for the banner comments):
   6. Team and roles
   7. Review and event detail
   8. Project settings, users, API tokens
+ 8b. Connectors
+ 8c. Your own account
   9. REST API (used by the MCP bridge and scripts)
  10. Entry point
 
@@ -42,7 +44,17 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
-from toogather import __version__, db, repo, security, workspace
+from toogather import (
+    __version__,
+    connectors,
+    crypto,
+    db,
+    importers,
+    project_types,
+    repo,
+    security,
+    workspace,
+)
 from toogather.config import load_settings, require_secure_secret
 from toogather.models import (
     EVENT_TYPE_LABELS,
@@ -63,9 +75,16 @@ log = logging.getLogger("toogather.web")
 settings = load_settings()
 HERE = Path(__file__).parent
 
-MAX_UPLOAD_BYTES = 2 * 1024 * 1024       # 2 MB is plenty for text notes and transcripts
-ALLOWED_UPLOAD_SUFFIXES = {".txt", ".md", ".vtt", ".srt", ".csv"}
+# A PDF or a Word file is much larger than the text inside it, so the limit on
+# what may be uploaded is larger than the limit on the text that comes out.
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024       # 8 MB: a long PDF with a text layer fits
+MAX_TEXT_BYTES = 2 * 1024 * 1024         # 2 MB of text is a very long document indeed
 ROLE_RANK = {Role.VIEWER.value: 0, Role.MEMBER.value: 1, Role.OWNER.value: 2}
+
+# How often a connector may check, offered in the setup form. Anything faster
+# than a quarter of an hour is polling, not scheduling.
+CONNECTOR_INTERVALS = ((15, "Every 15 minutes"), (60, "Hourly"),
+                       (360, "Every 6 hours"), (1440, "Daily"))
 
 
 @asynccontextmanager
@@ -96,6 +115,10 @@ templates.env.globals.update(
     EVENT_TYPE_LABELS=EVENT_TYPE_LABELS,
     EVENT_TYPES=[t.value for t in EventType],
     EVENT_STATUSES=[s.value for s in EventStatus],
+    PROJECT_TYPES=project_types.ALL_TYPES,
+    # The sidebar draws a folder from its stored kind, which the project type
+    # chose. Exposing the lookup keeps that mapping out of the template.
+    folder_icon=project_types.folder_icon,
     version=__version__,
 )
 templates.env.filters["markdown"] = render_markdown
@@ -147,8 +170,18 @@ async def _handle_http_error(request: Request, exc: StarletteHTTPException):
 
 
 def current_user(request: Request) -> dict | None:
+    """
+    Who is making this request, or None.
+
+    A person an admin has switched off is treated as signed out, so
+    deactivating someone takes effect on their next request rather than
+    whenever their cookie happens to expire.
+    """
     user_id = request.session.get("user_id")
-    return repo.get_user(user_id) if user_id else None
+    if not user_id:
+        return None
+    user = repo.get_user(user_id)
+    return user if user and user["is_active"] else None
 
 
 def require_user(request: Request) -> dict:
@@ -248,6 +281,10 @@ def health():
         "database": database,
         "ai_extraction_configured": settings.llm_configured,
         "email_configured": settings.smtp_configured,
+        # Which connectors this build has, so an operator can tell a missing
+        # connector from a misconfigured one without reading the logs.
+        "connectors": (sorted(c.kind for c in connectors.available())
+                       if settings.connectors_enabled else []),
     }
 
 
@@ -358,13 +395,17 @@ def home_page(request: Request):
 
 @app.post("/projects/new")
 def new_project_submit(request: Request, name: str = Form(...), description: str = Form(""),
-                       csrf: str = Form("")):
+                       template_kind: str = Form("software"), csrf: str = Form("")):
     """
     Create a project and furnish it.
 
     Anyone may create one: the creator becomes its owner, and from there the
     project's own roles decide who can do what. Seeding happens in the same
     request so the project is never briefly empty.
+
+    The project type decides which folders appear and what the charter asks.
+    An unknown type falls back to the default rather than being refused: the
+    picker is a convenience, not a gate.
     """
     user = require_user(request)
     check_csrf(request, csrf)
@@ -372,9 +413,11 @@ def new_project_submit(request: Request, name: str = Form(...), description: str
         flash(request, "Give the project a name first.", "error")
         return RedirectResponse("/", status_code=303)
 
-    project = repo.create_project(name, description, str(user["id"]))
-    workspace.seed_project(str(project["id"]), project["name"], str(user["id"]))
-    repo.audit("project.create", user_id=str(user["id"]), project_id=str(project["id"]))
+    ptype = project_types.get(template_kind)
+    project = repo.create_project(name, description, str(user["id"]), ptype.kind)
+    workspace.seed_project(str(project["id"]), project["name"], str(user["id"]), ptype.kind)
+    repo.audit("project.create", user_id=str(user["id"]), project_id=str(project["id"]),
+               detail={"template_kind": ptype.kind})
     flash(request, f"{project['name']} is ready. Start with the charter.")
     return RedirectResponse(f"/projects/{project['id']}", status_code=303)
 
@@ -396,6 +439,9 @@ def project_page(request: Request, project_id: uuid.UUID):
         can_edit=ROLE_RANK[role] >= ROLE_RANK[Role.MEMBER.value],
         today=settings.today().isoformat(),
         folders=repo.list_folders(pid),
+        project_type=project_types.get(project.get("template_kind")),
+        accepted_uploads=", ".join(importers.accepted_suffixes()),
+        upload_accept=",".join(importers.accepted_suffixes()),
         charter=repo.get_special_document(pid, "charter"),
         skill_doc=repo.get_special_document(pid, "skill"),
         recent_docs=repo.recent_documents(pid),
@@ -412,27 +458,43 @@ async def upload_source(request: Request, project_id: uuid.UUID,
     target = f"/projects/{project_id}"
 
     if file is not None and file.filename:
-        suffix = Path(file.filename).suffix.lower()
-        if suffix not in ALLOWED_UPLOAD_SUFFIXES:
-            flash(request, f"Upload a text file ({', '.join(sorted(ALLOWED_UPLOAD_SUFFIXES))}). "
-                           "For Word or PDF, copy the text and paste it instead.", "error")
-            return RedirectResponse(target, status_code=303)
         raw = await file.read(MAX_UPLOAD_BYTES + 1)
         if len(raw) > MAX_UPLOAD_BYTES:
-            flash(request, "That file is larger than 2 MB. Split it into smaller parts.", "error")
+            flash(request, f"That file is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB. "
+                           "Split it into smaller parts.", "error")
             return RedirectResponse(target, status_code=303)
-        # utf-8-sig removes the byte-order mark some Windows editors add.
-        content = raw.decode("utf-8-sig", errors="replace")
-        filename = Path(file.filename).name
+        # The importers decide what a file type means: a .docx is unzipped, a
+        # .pdf is read page by page, a WhatsApp export is turned into a
+        # transcript. This route only moves bytes and reports the result.
+        try:
+            imported = importers.read_file(file.filename, raw)
+        except (importers.UnsupportedFile, importers.ImportProblem) as exc:
+            flash(request, str(exc), "error")
+            return RedirectResponse(target, status_code=303)
+        content, filename = imported.text, Path(file.filename).name
     elif pasted_text.strip():
-        content = pasted_text
+        imported = importers.read_text(pasted_text)
+        content = imported.text
         filename = title.strip() or f"Pasted notes {settings.today().isoformat()}"
     else:
         flash(request, "Choose a file or paste some text first.", "error")
         return RedirectResponse(target, status_code=303)
 
+    # A 200-page PDF can hold more text than any note needs to be. Cut it here
+    # rather than at the database, so the person is told it happened.
+    truncated = False
+    if len(content.encode("utf-8")) > MAX_TEXT_BYTES:
+        content = content.encode("utf-8")[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
+        truncated = True
+
     repo.create_source(str(project_id), filename, content, str(user["id"]), kind="upload")
-    flash(request, f"“{filename}” was added. Proposals will appear in Review shortly.")
+    message = f"“{filename}” was added. Proposals will appear in Review shortly."
+    if imported.note:
+        message = f"{imported.note} {message}"
+    if truncated:
+        message += (f" It was longer than {MAX_TEXT_BYTES // (1024 * 1024)} MB of text, "
+                    "so only the beginning was kept.")
+    flash(request, message)
     return RedirectResponse(target, status_code=303)
 
 
@@ -465,6 +527,7 @@ def events_page(request: Request, project_id: uuid.UUID, q: str = "", type: str 
     status_ = status if status in {s.value for s in EventStatus} else ""
     events = repo.search_events(str(project_id), q, type_, status_, limit=100)
     return render(request, "events.html", project=project, role=role, events=events,
+                  folders=repo.list_folders(str(project_id)),
                   q=q, type_filter=type_, status_filter=status_)
 
 
@@ -748,6 +811,7 @@ def review_page(request: Request, project_id: uuid.UUID):
     project, role = load_project(project_id, user)
     proposals = repo.search_events(str(project_id), status=EventStatus.PROPOSED.value, limit=200)
     return render(request, "review.html", project=project, role=role, events=proposals,
+                  folders=repo.list_folders(str(project_id)),
                   can_edit=ROLE_RANK[role] >= ROLE_RANK[Role.MEMBER.value])
 
 
@@ -788,7 +852,8 @@ def event_page(request: Request, event_id: uuid.UUID):
     return render(
         request, "event.html", project=project, role=role, e=event,
         history=repo.event_history(str(event_id)), decisions=decisions, related=related,
-        source=source, can_edit=ROLE_RANK[role] >= ROLE_RANK[Role.MEMBER.value],
+        source=source, folders=repo.list_folders(pid),
+        can_edit=ROLE_RANK[role] >= ROLE_RANK[Role.MEMBER.value],
     )
 
 
@@ -840,9 +905,74 @@ def supersede(request: Request, event_id: uuid.UUID, replaced_by_id: str = Form(
 def settings_page(request: Request, project_id: uuid.UUID):
     user = require_user(request)
     project, role = load_project(project_id, user, Role.OWNER.value)
-    return render(request, "settings.html", project=project, role=role,
-                  members=repo.list_members(str(project_id)), all_users=repo.list_users(),
-                  llm_configured=settings.llm_configured)
+    override = repo.get_ai_settings(str(project_id))
+    return render(
+        request, "settings.html", project=project, role=role,
+        members=repo.list_members(str(project_id)), all_users=repo.list_users(),
+        folders=repo.list_folders(str(project_id)),
+        project_type=project_types.get(project.get("template_kind")),
+        llm_configured=settings.llm_configured,
+        server_model=settings.llm_model,
+        ai_override=override,
+        # Never the key itself, only whether one is stored. The page has no
+        # reason to know it, and a page that does not have it cannot leak it.
+        ai_key_stored=bool(override and override["api_key_encrypted"]),
+    )
+
+
+@app.post("/projects/{project_id}/settings/provider")
+def settings_provider(request: Request, project_id: uuid.UUID,
+                      base_url: str = Form(""), model: str = Form(""),
+                      api_key: str = Form(""), clear_key: str = Form(""),
+                      csrf: str = Form("")):
+    """
+    Point one project at its own AI provider.
+
+    The key is encrypted before it is stored. An empty key field means "keep
+    the one already saved", so the form can be submitted without the page ever
+    having held the key; clearing it is an explicit checkbox instead.
+    """
+    user = require_user(request)
+    check_csrf(request, csrf)
+    load_project(project_id, user, Role.OWNER.value)
+    target = f"/projects/{project_id}/settings"
+
+    if not base_url.strip() or not model.strip():
+        flash(request, "An endpoint and a model are both needed. Leave them empty and "
+                       "use “Use the server’s provider” to go back to the default.",
+              "error")
+        return RedirectResponse(target, status_code=303)
+    if not base_url.strip().lower().startswith(("http://", "https://")):
+        flash(request, "The endpoint must be an http or https URL.", "error")
+        return RedirectResponse(target, status_code=303)
+
+    if clear_key == "on":
+        stored_key: str | None = ""
+    elif api_key.strip():
+        stored_key = crypto.encrypt_secret(settings.secret_key, api_key.strip())
+    else:
+        stored_key = None                      # leave whatever is saved alone
+
+    repo.save_ai_settings(str(project_id), base_url.strip(), model.strip(),
+                          stored_key, str(user["id"]))
+    # The endpoint and model are recorded; the key never is.
+    repo.audit("project.ai_provider", user_id=str(user["id"]), project_id=str(project_id),
+               detail={"base_url": base_url.strip(), "model": model.strip()})
+    flash(request, f"This project now uses {model.strip()} at {base_url.strip()}.")
+    return RedirectResponse(target, status_code=303)
+
+
+@app.post("/projects/{project_id}/settings/provider/clear")
+def settings_provider_clear(request: Request, project_id: uuid.UUID, csrf: str = Form("")):
+    """Go back to the server's AI provider. The stored key is deleted with the row."""
+    user = require_user(request)
+    check_csrf(request, csrf)
+    load_project(project_id, user, Role.OWNER.value)
+    repo.clear_ai_settings(str(project_id))
+    repo.audit("project.ai_provider_clear", user_id=str(user["id"]), project_id=str(project_id))
+    flash(request, "This project uses the server’s AI provider again. "
+                   "Its own API key has been deleted.")
+    return RedirectResponse(f"/projects/{project_id}/settings", status_code=303)
 
 
 @app.post("/projects/{project_id}/settings/ai")
@@ -889,31 +1019,103 @@ def settings_members(request: Request, project_id: uuid.UUID, user_id: str = For
     return RedirectResponse(target, status_code=303)
 
 
-@app.get("/admin/users")
-def users_page(request: Request):
+def require_admin(request: Request) -> dict:
+    """The server administrator, or 403."""
     user = require_user(request)
     if not user["is_admin"]:
-        raise StarletteHTTPException(403, "Only admins can manage people.")
+        raise StarletteHTTPException(403, "Only admins can do that.")
+    return user
+
+
+@app.get("/admin/projects")
+def admin_projects_page(request: Request):
+    """
+    Every project on the server, with counts but not contents.
+
+    An admin is not automatically on any team. This page exists so they can
+    still see what the server holds, and let themselves into a project when
+    they genuinely need to - which is recorded.
+    """
+    user = require_admin(request)
+    mine = {str(p["id"]) for p in repo.list_projects_for_user(user)}
+    return render(request, "admin_projects.html",
+                  projects=repo.list_all_projects(), my_project_ids=mine)
+
+
+@app.post("/admin/projects/{project_id}/join")
+def admin_join_project(request: Request, project_id: uuid.UUID, csrf: str = Form("")):
+    """
+    Let an admin into a project as owner, and write it down.
+
+    Whoever runs the server can read the database anyway, so this is not a
+    new power. What it adds is a trace: the audit log records that an admin
+    gave themselves access, and when.
+    """
+    user = require_admin(request)
+    check_csrf(request, csrf)
+    project = repo.get_project(str(project_id))
+    if project is None:
+        raise StarletteHTTPException(404, "Project not found.")
+
+    if repo.get_role(str(project_id), user) is not None:
+        flash(request, f"You are already in {project['name']}.")
+    else:
+        repo.upsert_member(str(project_id), str(user["id"]), Role.OWNER.value)
+        repo.audit("admin.join_project", user_id=str(user["id"]),
+                   project_id=str(project_id), detail={"granted": Role.OWNER.value})
+        flash(request, f"You added yourself to {project['name']} as owner. "
+                       "This has been recorded in the audit log.", "warning")
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+@app.get("/admin/users")
+def users_page(request: Request):
+    require_admin(request)          # called for the check, not for the person
     return render(request, "users.html", users=repo.list_users())
 
 
-@app.post("/admin/users")
-def users_create(request: Request, display_name: str = Form(...), email: str = Form(...),
-                 password: str = Form(...), is_admin: str = Form("off"), csrf: str = Form("")):
-    user = require_user(request)
+@app.post("/admin/users/{target_id}")
+def users_update(request: Request, target_id: uuid.UUID, action: str = Form(...),
+                 csrf: str = Form("")):
+    """
+    Change what one person may do on this server.
+
+    There is nothing to "create" here: people add themselves by opening the
+    app and typing a name. What an admin can do is promote someone to admin,
+    or switch a leaver off.
+    """
+    user = require_admin(request)
     check_csrf(request, csrf)
-    if not user["is_admin"]:
-        raise StarletteHTTPException(403, "Only admins can manage people.")
-    problem = security.password_problem(password)
-    if problem:
-        flash(request, problem, "error")
-    elif repo.get_user_by_email(email):
-        flash(request, "Someone with that email already exists.", "error")
+    target = repo.get_user(str(target_id))
+    if target is None:
+        raise StarletteHTTPException(404, "No such person.")
+
+    # Do not let the last admin remove their own last route back in.
+    removing_last_admin = (
+        action in {"revoke_admin", "deactivate"}
+        and target["is_admin"] and repo.count_admins() <= 1
+    )
+    if removing_last_admin:
+        flash(request, "This is the only admin. Make someone else an admin first.", "error")
+        return RedirectResponse("/admin/users", status_code=303)
+
+    if action == "make_admin":
+        repo.set_user_admin(str(target_id), True)
+        flash(request, f"{target['display_name']} is now an admin.")
+    elif action == "revoke_admin":
+        repo.set_user_admin(str(target_id), False)
+        flash(request, f"{target['display_name']} is no longer an admin.")
+    elif action == "deactivate":
+        repo.set_user_active(str(target_id), False)
+        flash(request, f"{target['display_name']} has been switched off.")
+    elif action == "reactivate":
+        repo.set_user_active(str(target_id), True)
+        flash(request, f"{target['display_name']} is active again.")
     else:
-        repo.create_user(email, display_name, security.hash_password(password),
-                         is_admin=is_admin == "on")
-        repo.audit("admin.user_created", user_id=str(user["id"]), detail={"email": email})
-        flash(request, f"Account created for {email}. Share the password with them privately.")
+        raise StarletteHTTPException(400, "Unknown action.")
+
+    repo.audit("admin.user_update", user_id=str(user["id"]),
+               detail={"target": str(target_id), "action": action})
     return RedirectResponse("/admin/users", status_code=303)
 
 
@@ -942,6 +1144,254 @@ def tokens_revoke(request: Request, token_id: uuid.UUID, csrf: str = Form("")):
     repo.revoke_token(str(token_id), str(user["id"]))
     flash(request, "Token revoked. Anything using it will stop working.")
     return RedirectResponse("/account/tokens", status_code=303)
+
+
+# =====================================================================
+# 8b. Connectors
+#
+# A connector is a scheduled way of bringing material in. It is owner-only:
+# it holds a credential, and it decides what lands in the project's review
+# queue. The worker does the actual running; these routes only configure it
+# and show what happened.
+# =====================================================================
+
+
+def _load_connector(project_id: uuid.UUID, connector_id: uuid.UUID) -> dict:
+    """One connector, checked against its project so an id cannot cross over."""
+    row = repo.get_connector(str(connector_id))
+    if row is None or str(row["project_id"]) != str(project_id):
+        raise StarletteHTTPException(404, "Connector not found.")
+    return row
+
+
+def _read_connector_form(connector, form) -> tuple[dict, str | None, str | None]:
+    """
+    Read a connector's own fields out of a submitted form.
+
+    Returns (config, secret, problem). A `secret` of None means "keep whatever
+    is stored": the form is never sent the existing secret, so an empty box
+    cannot be told apart from an unchanged one without the explicit
+    "forget it" checkbox.
+    """
+    config: dict[str, str] = {}
+    secret: str | None = None
+    for spec in connector.fields:
+        value = str(form.get(spec.name, "")).strip()
+        if not spec.secret:
+            config[spec.name] = value[:500]
+        elif form.get(f"clear_{spec.name}") == "on":
+            secret = ""
+        elif value:
+            secret = value
+    return config, secret, connector.config_problem(config)
+
+
+def _interval(raw: str) -> int:
+    """Pick a schedule from the form, refusing anything not on the menu."""
+    allowed = {minutes for minutes, _ in CONNECTOR_INTERVALS}
+    try:
+        chosen = int(raw)
+    except (TypeError, ValueError):
+        return 60
+    return chosen if chosen in allowed else 60
+
+
+@app.get("/projects/{project_id}/connectors")
+def connectors_page(request: Request, project_id: uuid.UUID):
+    user = require_user(request)
+    project, role = load_project(project_id, user, Role.OWNER.value)
+    return render(
+        request, "connectors.html",
+        project=project, role=role,
+        folders=repo.list_folders(str(project_id)),
+        rows=repo.list_connectors(str(project_id)),
+        available=connectors.available(),
+        # A connector whose class is no longer installed still has a row; the
+        # page needs the definition to draw its fields, so look each one up.
+        definition=connectors.get,
+        intervals=CONNECTOR_INTERVALS,
+        connectors_enabled=settings.connectors_enabled,
+        ai_on=project["ai_extraction_enabled"],
+    )
+
+
+@app.post("/projects/{project_id}/connectors")
+async def create_connector_submit(request: Request, project_id: uuid.UUID):
+    """
+    Add a connector. Its fields are defined by the connector class, not by
+    this route, so the form is read as a whole rather than declared here.
+    """
+    user = require_user(request)
+    form = await request.form()
+    check_csrf(request, str(form.get("csrf", "")))
+    load_project(project_id, user, Role.OWNER.value)
+    target = f"/projects/{project_id}/connectors"
+
+    connector = connectors.get(str(form.get("kind", "")))
+    if connector is None:
+        flash(request, "This server does not have that connector.", "error")
+        return RedirectResponse(target, status_code=303)
+
+    config, secret, problem = _read_connector_form(connector, form)
+    if problem:
+        flash(request, problem, "error")
+        return RedirectResponse(target, status_code=303)
+
+    row = repo.create_connector(
+        project_id=str(project_id), kind=connector.kind,
+        name=str(form.get("name", "")).strip()[:120] or connector.label,
+        config=config,
+        secret_encrypted=crypto.encrypt_secret(settings.secret_key, secret or ""),
+        run_every_minutes=_interval(str(form.get("run_every_minutes", "60"))),
+        created_by=str(user["id"]),
+    )
+    # The config is recorded because it is not secret; the token is not.
+    repo.audit("connector.create", user_id=str(user["id"]), project_id=str(project_id),
+               detail={"kind": connector.kind, "config": config})
+    flash(request, f"{row['name']} added. The first check runs within a minute.")
+    return RedirectResponse(target, status_code=303)
+
+
+@app.post("/projects/{project_id}/connectors/{connector_id}")
+async def update_connector_submit(request: Request, project_id: uuid.UUID,
+                                  connector_id: uuid.UUID):
+    user = require_user(request)
+    form = await request.form()
+    check_csrf(request, str(form.get("csrf", "")))
+    load_project(project_id, user, Role.OWNER.value)
+    row = _load_connector(project_id, connector_id)
+    target = f"/projects/{project_id}/connectors"
+
+    connector = connectors.get(row["kind"])
+    if connector is None:
+        flash(request, "This server no longer has that connector, so it cannot be "
+                       "changed. Delete it, or reinstall the connector.", "error")
+        return RedirectResponse(target, status_code=303)
+
+    config, secret, problem = _read_connector_form(connector, form)
+    if problem:
+        flash(request, problem, "error")
+        return RedirectResponse(target, status_code=303)
+
+    repo.update_connector(
+        connector_id=str(connector_id), project_id=str(project_id),
+        name=str(form.get("name", "")).strip()[:120] or row["name"],
+        config=config,
+        secret_encrypted=(None if secret is None
+                          else crypto.encrypt_secret(settings.secret_key, secret)),
+        run_every_minutes=_interval(str(form.get("run_every_minutes", "60"))),
+        enabled=form.get("enabled") == "on",
+    )
+    repo.audit("connector.update", user_id=str(user["id"]), project_id=str(project_id),
+               detail={"connector": str(connector_id), "config": config})
+    flash(request, "Connector saved.")
+    return RedirectResponse(target, status_code=303)
+
+
+@app.post("/projects/{project_id}/connectors/{connector_id}/run")
+def run_connector_submit(request: Request, project_id: uuid.UUID, connector_id: uuid.UUID,
+                         csrf: str = Form("")):
+    """
+    Ask for a check now.
+
+    This does not run anything here: a web request must not wait on a network
+    fetch of unknown length. It marks the connector due, and the worker picks
+    it up on its next pass, within about half a minute.
+    """
+    user = require_user(request)
+    check_csrf(request, csrf)
+    load_project(project_id, user, Role.OWNER.value)
+    _load_connector(project_id, connector_id)
+    repo.run_connector_now(str(connector_id), str(project_id))
+    flash(request, "Queued. The worker will check within a minute; reload to see the result.")
+    return RedirectResponse(f"/projects/{project_id}/connectors", status_code=303)
+
+
+@app.post("/projects/{project_id}/connectors/{connector_id}/delete")
+def delete_connector_submit(request: Request, project_id: uuid.UUID, connector_id: uuid.UUID,
+                            csrf: str = Form("")):
+    user = require_user(request)
+    check_csrf(request, csrf)
+    load_project(project_id, user, Role.OWNER.value)
+    row = _load_connector(project_id, connector_id)
+    repo.delete_connector(str(connector_id), str(project_id))
+    repo.audit("connector.delete", user_id=str(user["id"]), project_id=str(project_id),
+               detail={"kind": row["kind"], "name": row["name"]})
+    flash(request, f"{row['name']} removed. What it already brought in is still here.")
+    return RedirectResponse(f"/projects/{project_id}/connectors", status_code=303)
+
+
+# =====================================================================
+# 8c. Your own account
+# =====================================================================
+
+
+@app.get("/account")
+def account_page(request: Request):
+    """
+    What a person can change about themselves: their name, and whether their
+    account is still in use.
+    """
+    user = require_user(request)
+    return render(request, "account.html",
+                  sole_owner_of=repo.projects_solely_owned_by(str(user["id"])),
+                  is_last_admin=user["is_admin"] and repo.count_admins() <= 1)
+
+
+@app.post("/account/name")
+def account_rename(request: Request, display_name: str = Form(...), csrf: str = Form("")):
+    """
+    Change your display name.
+
+    The user row is not replaced, so everything already attached to this
+    person - events, documents, project roles - simply shows the new name.
+    """
+    user = require_user(request)
+    check_csrf(request, csrf)
+    name = display_name.strip()
+    if not name:
+        flash(request, "A name cannot be empty.", "error")
+    elif len(name) > MAX_DISPLAY_NAME:
+        flash(request, f"Keep it under {MAX_DISPLAY_NAME} characters.", "error")
+    else:
+        repo.set_display_name(str(user["id"]), name)
+        flash(request, f"You are now shown as {name}.")
+    return RedirectResponse("/account", status_code=303)
+
+
+@app.post("/account/deactivate")
+def account_deactivate(request: Request, csrf: str = Form(""), confirm: str = Form("")):
+    """
+    Switch your own account off and sign out.
+
+    The row stays, so your name stays on what you wrote; you simply stop being
+    able to use it. An admin can switch it back on.
+
+    Two things are refused, because both would leave the server stuck: being
+    the only owner of a project, and being the only admin. Each names exactly
+    what to fix first rather than saying "not allowed".
+    """
+    user = require_user(request)
+    check_csrf(request, csrf)
+    if confirm != "deactivate":
+        flash(request, "Type deactivate to confirm.", "error")
+        return RedirectResponse("/account", status_code=303)
+
+    orphaned = repo.projects_solely_owned_by(str(user["id"]))
+    if orphaned:
+        names = ", ".join(p["name"] for p in orphaned)
+        flash(request, f"You are the only owner of {names}. Make someone else an owner "
+                       "first, or nobody will be able to manage it.", "error")
+        return RedirectResponse("/account", status_code=303)
+    if user["is_admin"] and repo.count_admins() <= 1:
+        flash(request, "You are the only admin on this server. Make someone else an "
+                       "admin first.", "error")
+        return RedirectResponse("/account", status_code=303)
+
+    repo.set_user_active(str(user["id"]), False)
+    repo.audit("account.deactivate", user_id=str(user["id"]))
+    request.session.clear()
+    return RedirectResponse("/welcome", status_code=303)
 
 
 # =====================================================================
@@ -1024,8 +1474,9 @@ async def api_add_source(request: Request, project_id: uuid.UUID):
     content = str(payload.get("content") or "")
     if not content.strip():
         raise StarletteHTTPException(400, "content is required.")
-    if len(content.encode("utf-8")) > MAX_UPLOAD_BYTES:
-        raise StarletteHTTPException(413, "content is larger than 2 MB.")
+    if len(content.encode("utf-8")) > MAX_TEXT_BYTES:
+        raise StarletteHTTPException(
+            413, f"content is larger than {MAX_TEXT_BYTES // (1024 * 1024)} MB.")
     source = repo.create_source(str(project_id), title, content, str(user["id"]), kind="api")
     repo.audit("api.add_source", user_id=str(user["id"]), token_id=str(user["token_id"]),
                project_id=str(project_id), detail={"title": title, "chars": len(content)})

@@ -5,6 +5,8 @@
 #   open http://<this-machine>:8080
 #
 # Three services: the database, the web app, and the background worker.
+# The worker is not optional: it is what turns uploads into suggestions, runs
+# connectors, and sends the weekly digest.
 
 services:
   db:
@@ -31,6 +33,13 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://toogather:${POSTGRES_PASSWORD}@db:5432/toogather
+    volumes:
+      # Everything TooGather writes to disk: the SECRET_KEY it generates when
+      # you do not set one, and the Git connector's repository mirrors. Both
+      # services mount the same volume, because both read that key - and if it
+      # changed between them, sessions signed by one would be rejected by the
+      # other and stored API keys would stop decrypting.
+      - toogather-data:/data
     depends_on:
       db:
         condition: service_healthy
@@ -52,6 +61,8 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://toogather:${POSTGRES_PASSWORD}@db:5432/toogather
+    volumes:
+      - toogather-data:/data
     depends_on:
       db:
         condition: service_healthy
@@ -61,3 +72,4 @@ services:
 
 volumes:
   toogather-db:
+  toogather-data:

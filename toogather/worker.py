@@ -1,14 +1,19 @@
 """
 The background worker.
 
-It does two jobs in a simple loop:
-  1. Process uploaded sources: send them to the AI extractor (if allowed) and
-     save the proposals for review.
-  2. Once per DIGEST_INTERVAL_DAYS, email each project's owners a digest.
+It does three jobs in a simple loop:
+  1. Process uploaded sources: send them to the AI extractor (if the project
+     allows it) and save the proposals for review.
+  2. Run connectors that are due, so new material arrives without anyone
+     having to remember to upload it.
+  3. Once per DIGEST_INTERVAL_DAYS, email each project's owners a digest.
 
-Why a loop instead of a job-queue library: the queue is just the `sources`
-table (see repo.claim_next_pending_source). One less service to install,
-monitor, and explain.
+Why a loop instead of a job-queue library: both queues are just tables (see
+repo.claim_next_pending_source and repo.claim_due_connector). One less service
+to install, monitor, and explain.
+
+Uploads come before connectors on purpose. Somebody is waiting for an upload
+they just made; nobody is watching a repository poll.
 
 Run with:  python -m toogather.worker
 """
@@ -20,16 +25,19 @@ import signal
 import time
 from datetime import UTC, datetime, timedelta
 
-from toogather import db, repo
+from toogather import connectors, db, repo
 from toogather.config import Settings, load_settings
+from toogather.connectors.base import ConnectorError, Context
+from toogather.crypto import decrypt_secret
 from toogather.digest import render_digest_text, send_email
 from toogather.extraction import ExtractionError, extract_events
-from toogather.services import project_brief
+from toogather.services import project_brief, settings_for_project
 
 log = logging.getLogger("toogather.worker")
 
 IDLE_SLEEP_SECONDS = 5          # how long to wait when there is no work
 DIGEST_CHECK_EVERY_SECONDS = 600
+CONNECTOR_CHECK_EVERY_SECONDS = 30
 _running = True
 
 
@@ -38,6 +46,11 @@ def _stop(signum, _frame) -> None:
     global _running
     log.info("Received signal %s, stopping after the current job.", signum)
     _running = False
+
+
+# ---------------------------------------------------------------------
+# 1. Uploaded and connector-supplied sources
+# ---------------------------------------------------------------------
 
 
 def process_one_source(settings: Settings) -> bool:
@@ -54,13 +67,19 @@ def process_one_source(settings: Settings) -> bool:
         repo.finish_source(source_id, "skipped",
                            "AI extraction is off for this project. Add events manually.")
         return True
-    if not settings.llm_configured:
+
+    # A project may point at its own AI provider - a local Ollama for a client
+    # whose contract forbids cloud services, say - so the provider is resolved
+    # per project rather than read straight from the environment.
+    project_settings = settings_for_project(settings, str(source["project_id"]))
+    if not project_settings.llm_configured:
         repo.finish_source(source_id, "skipped",
-                           "No AI endpoint is configured. Set LLM_BASE_URL and LLM_MODEL.")
+                           "No AI endpoint is configured. Set one on this server, or "
+                           "give this project its own under Settings.")
         return True
 
     try:
-        proposals = extract_events(settings, source["filename"], source["content"])
+        proposals = extract_events(project_settings, source["filename"], source["content"])
         count = repo.insert_proposed_events(str(source["project_id"]), source, proposals)
         repo.finish_source(source_id, "done", f"{count} proposal(s) ready for review.")
         log.info("Source %s done: %d proposals", source_id, count)
@@ -71,6 +90,88 @@ def process_one_source(settings: Settings) -> bool:
         repo.finish_source(source_id, "failed", "Unexpected error. See worker logs.")
         log.exception("Unexpected error processing source %s", source_id)
     return True
+
+
+# ---------------------------------------------------------------------
+# 2. Connectors
+# ---------------------------------------------------------------------
+
+
+def _store_items(connector_row: dict, result) -> tuple[int, int]:
+    """Save what a run produced. Returns (stored, already_here)."""
+    stored = skipped = 0
+    for item in result.items:
+        row = repo.create_connector_source(
+            project_id=str(connector_row["project_id"]),
+            connector_id=str(connector_row["id"]),
+            external_id=item.external_id,
+            filename=item.title,
+            content=item.content,
+        )
+        if row is None:
+            skipped += 1      # the unique index refused a repeat; nothing to do
+        else:
+            stored += 1
+    return stored, skipped
+
+
+def run_one_connector(settings: Settings) -> bool:
+    """
+    Run the connector that is most overdue. Returns True if one ran.
+
+    A failed run does not move the cursor, so the next run tries the same
+    material again rather than stepping over it.
+    """
+    if not settings.connectors_enabled:
+        return False
+    row = repo.claim_due_connector()
+    if row is None:
+        return False
+
+    connector_id = str(row["id"])
+    connector = connectors.get(row["kind"])
+    if connector is None:
+        repo.finish_connector(
+            connector_id, "failed",
+            f"This server has no '{row['kind']}' connector installed.", None)
+        return True
+
+    log.info("Running connector %s (%s) for project %s",
+             connector_id, row["kind"], row["project_id"])
+    try:
+        workdir = settings.connector_workdir
+        workdir.mkdir(parents=True, exist_ok=True)
+        result = connector.fetch(Context(
+            connector_id=connector_id,
+            project_id=str(row["project_id"]),
+            config=dict(row["config"] or {}),
+            secret=decrypt_secret(settings.secret_key, row["secret_encrypted"]) or "",
+            cursor=row["cursor"] or "",
+            workdir=workdir,
+            timeout_seconds=settings.connector_timeout_seconds,
+        ))
+        stored, skipped = _store_items(row, result)
+    except ConnectorError as exc:
+        repo.finish_connector(connector_id, "failed", str(exc), None)
+        log.warning("Connector %s failed: %s", connector_id, exc)
+        return True
+    except Exception:  # one broken connector must not stop the worker
+        repo.finish_connector(connector_id, "failed",
+                              "Unexpected error. See the worker logs.", None)
+        log.exception("Unexpected error running connector %s", connector_id)
+        return True
+
+    note = result.note or f"Brought in {stored} item(s)."
+    if skipped:
+        note += f" {skipped} were already here."
+    repo.finish_connector(connector_id, "ok", note, result.cursor or None)
+    log.info("Connector %s: %s", connector_id, note)
+    return True
+
+
+# ---------------------------------------------------------------------
+# 3. The weekly digest
+# ---------------------------------------------------------------------
 
 
 def send_digests_if_due(settings: Settings) -> None:
@@ -102,6 +203,11 @@ def send_digests_if_due(settings: Settings) -> None:
     repo.set_state("last_digest_at", now.isoformat())
 
 
+# ---------------------------------------------------------------------
+# The loop
+# ---------------------------------------------------------------------
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     settings = load_settings()
@@ -113,16 +219,33 @@ def main() -> None:
     reset = repo.reset_stuck_sources()
     if reset:
         log.info("Re-queued %d source(s) left 'processing' by a previous run.", reset)
+    released = repo.release_running_connectors()
+    if released:
+        log.info("Released %d connector(s) left running by a previous run.", released)
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-    log.info("Worker started. AI extraction configured: %s. Email configured: %s.",
-             settings.llm_configured, settings.smtp_configured)
+    log.info(
+        "Worker started. AI extraction configured: %s. Email configured: %s. "
+        "Connectors: %s (%s).",
+        settings.llm_configured, settings.smtp_configured,
+        "on" if settings.connectors_enabled else "off",
+        ", ".join(c.kind for c in connectors.available()) or "none installed",
+    )
 
-    last_digest_check = 0.0
+    last_digest_check = last_connector_check = 0.0
     while _running:
+        did_work = False
         try:
             did_work = process_one_source(settings)
+
+            # Connectors only get a turn when no upload is waiting: somebody is
+            # watching an upload, nobody is watching a repository poll.
+            if not did_work and (
+                    time.monotonic() - last_connector_check > CONNECTOR_CHECK_EVERY_SECONDS):
+                last_connector_check = time.monotonic()
+                did_work = run_one_connector(settings)
+
             if time.monotonic() - last_digest_check > DIGEST_CHECK_EVERY_SECONDS:
                 send_digests_if_due(settings)
                 last_digest_check = time.monotonic()

@@ -62,13 +62,9 @@
             {% for f in folders %}
               <a class="nav-item {% if folder and folder.id == f.id %}is-active{% endif %}"
                  href="/projects/{{ project.id }}/folders/{{ f.id }}">
-                <span class="nav-icon" aria-hidden="true">
-                  {%- if f.kind == 'code_context' %}◈
-                  {%- elif f.kind == 'code_documentation' %}◉
-                  {%- elif f.kind == 'technical' %}⚙
-                  {%- elif f.kind == 'mom' %}🗓
-                  {%- else %}▪{% endif -%}
-                </span>
+                {#- The glyph comes from the project type that made the
+                    folder, so a construction project gets its own marks. -#}
+                <span class="nav-icon" aria-hidden="true">{{ folder_icon(f.kind) }}</span>
                 <span class="nav-text">{{ f.name }}</span>
                 {% if f.doc_count %}<span class="nav-count">{{ f.doc_count }}</span>{% endif %}
               </a>
@@ -81,10 +77,19 @@
               <span class="nav-icon" aria-hidden="true">◎</span>
               <span class="nav-text">Review</span>
             </a>
-            <a class="nav-item" href="/projects/{{ project.id }}/settings">
-              <span class="nav-icon" aria-hidden="true">⚙</span>
-              <span class="nav-text">Settings</span>
-            </a>
+            {#- Connectors and settings are owner-only pages. A member who
+                followed the link would get a clear 403, but showing a door
+                that does not open is worse than not showing it. -#}
+            {% if p.my_role == 'owner' %}
+              <a class="nav-item" href="/projects/{{ project.id }}/connectors">
+                <span class="nav-icon" aria-hidden="true">⇄</span>
+                <span class="nav-text">Connectors</span>
+              </a>
+              <a class="nav-item" href="/projects/{{ project.id }}/settings">
+                <span class="nav-icon" aria-hidden="true">⚙</span>
+                <span class="nav-text">Settings</span>
+              </a>
+            {% endif %}
           </div>
         {% endif %}
       {% else %}
@@ -92,11 +97,20 @@
       {% endfor %}
 
       <div class="nav-label">Account</div>
+      <a class="nav-item" href="/account">
+        <span class="nav-icon" aria-hidden="true">◐</span>
+        <span class="nav-text">Your account</span>
+      </a>
       <a class="nav-item" href="/account/tokens">
         <span class="nav-icon" aria-hidden="true">⚿</span>
         <span class="nav-text">API tokens</span>
       </a>
       {% if user.is_admin %}
+        <div class="nav-label">Server</div>
+        <a class="nav-item" href="/admin/projects">
+          <span class="nav-icon" aria-hidden="true">▦</span>
+          <span class="nav-text">All projects</span>
+        </a>
         <a class="nav-item" href="/admin/users">
           <span class="nav-icon" aria-hidden="true">◐</span>
           <span class="nav-text">People</span>

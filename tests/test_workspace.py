@@ -7,6 +7,9 @@ smuggle script into a page, which is the assumption
 `toogather/web/markdown.py` marks its output safe on.
 """
 
+import pytest
+
+from toogather import project_types
 from toogather.web.markdown import first_paragraph, render_markdown
 from toogather.workspace import (
     charter_template,
@@ -77,6 +80,34 @@ def test_skill_template_has_frontmatter_with_a_slug_name():
     # It should point an agent at the four folders it will actually find.
     for folder in ("Code Context", "Code Documentation", "Technical", "Minutes of Meeting"):
         assert folder in body
+
+
+@pytest.mark.parametrize("ptype", project_types.ALL_TYPES, ids=lambda t: t.kind)
+def test_every_project_type_seeds_a_usable_charter(ptype):
+    body = charter_template("Gudang Surabaya", ptype)
+    assert "# Gudang Surabaya" in body
+    assert "What we are trying to achieve" in body
+    assert "out of scope" in body
+    # Every "done" prompt should have become a checklist item.
+    assert body.count("- [ ] ") == len(ptype.done_examples)
+
+
+@pytest.mark.parametrize("ptype", project_types.ALL_TYPES, ids=lambda t: t.kind)
+def test_skill_md_points_only_at_folders_that_will_exist(ptype):
+    """
+    The "where to look" table is generated from the type's folders, so an
+    agent is never sent to a drawer the project does not have.
+    """
+    body = skill_template("Gudang Surabaya", ptype)
+    for folder in ptype.folders:
+        assert f"**{folder.name}**" in body
+        assert folder.read_when in body
+
+
+def test_a_construction_project_is_not_told_about_code():
+    body = skill_template("Tower B", project_types.CONSTRUCTION)
+    assert "Drawings and Specifications" in body
+    assert "Code Context" not in body
 
 
 # ---------------------------------------------------------------------

@@ -1,9 +1,14 @@
 """
 Setting up a project's workspace: folders, charter, and SKILL.md.
 
-A project is not useful empty. When one is created, TooGather seeds it with
-four folders, a charter ("what are we trying to achieve?") and a SKILL.md
-that an AI agent can read to learn how to work on this project.
+A project is not useful empty. When one is created, TooGather seeds it from a
+project type (see toogather/project_types.py) with that type's folders, a
+charter ("what are we trying to achieve?") and a SKILL.md that an AI agent can
+read to learn how to work on this project.
+
+This module is the renderer; project_types.py is the data. Wording that is the
+same for every project type lives here, so a new type only has to supply what
+is genuinely different about it.
 
 The seeded text is deliberately written as prompts rather than filler. A
 heading with a question under it invites someone to answer; a page of lorem
@@ -16,7 +21,8 @@ import re
 import secrets
 import unicodedata
 
-from toogather import repo
+from toogather import project_types, repo
+from toogather.project_types import ProjectType
 
 # Invite codes go in URLs and get pasted into chat, so they use a URL-safe
 # alphabet and are long enough that guessing one is not worth trying.
@@ -52,13 +58,21 @@ def unique_slug(project_id: str, name: str) -> str:
     return slug
 
 
-def charter_template(project_name: str) -> str:
-    """The starting charter. Questions, not filler."""
+def charter_template(project_name: str, ptype: ProjectType | None = None) -> str:
+    """
+    The starting charter. Questions, not filler.
+
+    The headings are the same for every project type, because every project
+    benefits from answering them. What changes is the prompt underneath, which
+    is written in the language of that kind of work.
+    """
+    ptype = ptype or project_types.DEFAULT_TYPE
+    done = "\n".join(f"- [ ] {item}" for item in ptype.done_examples)
     return f"""# {project_name}
 
 ## What we are trying to achieve
 
-_One paragraph. If someone reads only this, what should they understand?_
+{ptype.achieve_prompt}
 
 ## Why it matters
 
@@ -66,12 +80,11 @@ _What changes for whom once this works?_
 
 ## What "done" looks like
 
-- [ ] _A concrete, checkable outcome_
-- [ ] _Another one_
+{done}
 
 ## What is explicitly out of scope
 
-_Naming these now saves an argument later._
+{ptype.scope_prompt}
 
 ## Who is involved
 
@@ -81,14 +94,21 @@ _Naming these now saves an argument later._
 """
 
 
-def skill_template(project_name: str) -> str:
+def skill_template(project_name: str, ptype: ProjectType | None = None) -> str:
     """
     The starting SKILL.md.
 
     This is the file an AI agent reads before working on the project. It is
     written for that audience: what the project is, the rules to follow, and
-    where to look things up.
+    where to look things up. The "where to look" table is generated from the
+    project type's folders, so it always matches the folders that actually
+    exist.
     """
+    ptype = ptype or project_types.DEFAULT_TYPE
+    rules = "\n".join(f"- {rule}" for rule in ptype.agent_rules)
+    lookup = "\n".join(
+        f"| {folder.read_when} | **{folder.name}** |" for folder in ptype.folders
+    )
     return f"""---
 name: {slugify(project_name, fallback='project')}
 description: >-
@@ -100,23 +120,19 @@ description: >-
 
 ## What this project is
 
-_Two or three sentences. Enough that an agent stops guessing._
+{ptype.agent_intro}
 
 ## Rules to follow
 
-_Things that are true here and are not obvious from the code._
+_Things that are true here and are not obvious from the work itself._
 
-- _e.g. "Migrations only move forward: never edit an applied file."_
-- _e.g. "All user-facing text is written in plain English, no jargon."_
+{rules}
 
 ## Where to look
 
 | If you need | Read |
 | --- | --- |
-| How the system fits together | **Code Context** |
-| How to use or run it | **Code Documentation** |
-| Infrastructure and deployment | **Technical** |
-| What was decided, and when | **Minutes of Meeting** |
+{lookup}
 
 ## Decisions that are already made
 
@@ -128,7 +144,8 @@ _Where an agent should ask rather than assume._
 """
 
 
-def seed_project(project_id: str, project_name: str, created_by: str | None) -> None:
+def seed_project(project_id: str, project_name: str, created_by: str | None,
+                 template_kind: str | None = None) -> None:
     """
     Give a brand-new project its folders, charter, and SKILL.md.
 
@@ -136,13 +153,15 @@ def seed_project(project_id: str, project_name: str, created_by: str | None) -> 
     project that already has folders only in the sense that it would add
     duplicates - so do not.
     """
-    for position, folder in enumerate(repo.DEFAULT_FOLDERS, start=1):
+    ptype = project_types.get(template_kind)
+
+    for position, folder in enumerate(ptype.folders, start=1):
         repo.create_folder(
             project_id=project_id,
-            name=folder["name"],
-            slug=folder["slug"],
-            kind=folder["kind"],
-            description=folder["description"],
+            name=folder.name,
+            slug=folder.slug,
+            kind=folder.kind,
+            description=folder.description,
             position=position,
             created_by=created_by,
         )
@@ -151,7 +170,7 @@ def seed_project(project_id: str, project_name: str, created_by: str | None) -> 
         project_id=project_id,
         folder_id=None,
         title="Project charter",
-        body=charter_template(project_name),
+        body=charter_template(project_name, ptype),
         doc_kind="charter",
         created_by=created_by,
     )
@@ -159,7 +178,7 @@ def seed_project(project_id: str, project_name: str, created_by: str | None) -> 
         project_id=project_id,
         folder_id=None,
         title="SKILL.md",
-        body=skill_template(project_name),
+        body=skill_template(project_name, ptype),
         doc_kind="skill",
         created_by=created_by,
     )

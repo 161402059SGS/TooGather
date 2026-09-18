@@ -3,15 +3,84 @@
 {% block content %}
 {% set active = 'settings' %}{% include "_project_nav.html" %}
 
+<h1>Settings</h1>
+<p class="small faint">{{ project_type.label }} project.</p>
+
 <h2>AI extraction</h2>
-<p>When on, uploaded notes are sent to the configured AI service to suggest events.
+<p>When on, uploaded notes are sent to an AI service to suggest events.
 Check that your client agreement allows this before turning it on.</p>
-{% if not llm_configured %}<p class="form-error">No AI service is configured on this server yet (LLM_BASE_URL and LLM_MODEL), so uploads will be stored but not analysed.</p>{% endif %}
+{% if not llm_configured and not ai_override %}
+  <p class="form-error">
+    No AI service is configured on this server (LLM_BASE_URL and LLM_MODEL), and
+    this project has not set its own below, so uploads will be stored but not
+    analysed.
+  </p>
+{% endif %}
 <form method="post" action="/projects/{{ project.id }}/settings/ai">
   <input type="hidden" name="csrf" value="{{ csrf_token }}">
-  <label class="checkbox"><input type="checkbox" name="enabled" {% if project.ai_extraction_enabled %}checked{% endif %}> Send uploaded notes to AI for suggestions</label>
+  <label class="checkbox">
+    <input type="checkbox" name="enabled"
+           {% if project.ai_extraction_enabled %}checked{% endif %}>
+    Send uploaded notes to AI for suggestions
+  </label>
   <button type="submit">Save</button>
 </form>
+
+{# --- Which AI service this project uses ------------------------------ #}
+<h2>AI provider for this project</h2>
+<p class="small muted">
+  By default this project uses whatever the server is configured with
+  {% if llm_configured %}({{ server_model }}){% else %}(nothing, right now){% endif %}.
+  Set an endpoint here to use a different one - a local Ollama for a client
+  whose contract forbids cloud services, or a better model for work that needs
+  it. Anything OpenAI-compatible works.
+</p>
+<p class="hint">
+  The API key is encrypted before it is stored, and is never shown again. If
+  this server's SECRET_KEY is ever replaced, stored keys cannot be read back
+  and will have to be entered again.
+</p>
+
+<form method="post" action="/projects/{{ project.id }}/settings/provider">
+  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+  <div class="field">
+    <label for="base_url">Endpoint</label>
+    <input id="base_url" name="base_url" type="text" placeholder="http://localhost:11434/v1"
+           value="{{ ai_override.base_url if ai_override else '' }}">
+    <span class="hint">The base URL, ending in /v1. TooGather calls
+      <code>/chat/completions</code> under it.</span>
+  </div>
+  <div class="field">
+    <label for="model">Model</label>
+    <input id="model" name="model" type="text" placeholder="llama3.1:8b"
+           value="{{ ai_override.model if ai_override else '' }}">
+  </div>
+  <div class="field">
+    <label for="api_key">API key <span class="faint">(optional)</span></label>
+    <input id="api_key" name="api_key" type="password" autocomplete="off"
+           placeholder="{{ 'Stored. Type a new one to replace it.'
+                           if ai_key_stored else 'Not set - a local Ollama needs none' }}">
+    {% if ai_key_stored %}
+      <label class="checkbox small">
+        <input type="checkbox" name="clear_key"> Forget the stored key
+      </label>
+    {% endif %}
+  </div>
+  <button type="submit">Use this provider</button>
+</form>
+
+{% if ai_override %}
+  <form method="post" action="/projects/{{ project.id }}/settings/provider/clear">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <button class="secondary" type="submit">Use the server&rsquo;s provider instead</button>
+  </form>
+{% endif %}
+
+<h2>Connectors</h2>
+<p class="small muted">
+  Scheduled ways of bringing material in, such as commits from a repository.
+  <a href="/projects/{{ project.id }}/connectors">Set them up here.</a>
+</p>
 
 <h2>Members</h2>
 <div class="table-wrap"><table>
@@ -39,7 +108,9 @@ Check that your client agreement allows this before turning it on.</p>
   <input type="hidden" name="csrf" value="{{ csrf_token }}">
   <div><label for="user_id">Person</label>
     <select id="user_id" name="user_id" required>
-      {% for u in all_users if u.is_active %}<option value="{{ u.id }}">{{ u.display_name }} ({{ u.email }})</option>{% endfor %}
+      {% for u in all_users if u.is_active %}
+        <option value="{{ u.id }}">{{ u.display_name }}</option>
+      {% endfor %}
     </select></div>
   <div><label for="role">Role</label>
     <select id="role" name="role">
@@ -49,5 +120,8 @@ Check that your client agreement allows this before turning it on.</p>
     </select></div>
   <div><button type="submit">Save member</button></div>
 </form>
-<p class="small muted">Someone missing from the list? An admin can create their account under People.</p>
+<p class="small muted">
+  Someone missing from the list? They have not opened TooGather yet. Send them
+  an <a href="/projects/{{ project.id }}/team">invite link</a> instead.
+</p>
 {% endblock %}

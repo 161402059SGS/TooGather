@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Your account | TooGather{% endblock %}
+
+{#- What a person can change about themselves.
+
+    There is no password to reset here and no email to verify: a visitor
+    types a name once and is remembered by a signed cookie. So this page
+    holds the two things that do exist - the name everyone sees, and
+    whether the account is still in use. -#}
+{% block content %}
+<h1>Your account</h1>
+<p class="lead">You are signed in as {{ user.display_name }}.</p>
+
+<h2>Your name</h2>
+<p class="small muted">
+  This is the name on everything you record. Changing it changes how you are
+  shown everywhere, including on things you wrote before - it is the same
+  account, under a new name.
+</p>
+<form method="post" action="/account/name">
+  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+  <div class="field">
+    <label for="display_name">Display name</label>
+    <input id="display_name" name="display_name" type="text" required maxlength="60"
+           value="{{ user.display_name }}">
+  </div>
+  <button type="submit">Save name</button>
+</form>
+
+<h2>How you sign in</h2>
+<p class="small muted">
+  There is nothing to change here. TooGather has no passwords: this browser
+  holds a signed cookie that says who you are, and your project roles hang off
+  that. Signing out on this browser and typing your name again creates a
+  <em>new</em> person, not the same one - so if you are moving to another
+  machine, ask a project owner for an invite link rather than retyping your
+  name.
+</p>
+
+<h2>Switch this account off</h2>
+<p class="small muted">
+  Deactivating signs you out and stops this account being used. What you wrote
+  stays, with your name on it, because removing it would blank out the history
+  it is part of. An administrator can switch it back on.
+</p>
+
+{% if sole_owner_of %}
+  <p class="form-error">
+    You are the only owner of
+    {% for p in sole_owner_of %}
+      <a href="/projects/{{ p.id }}/team">{{ p.name }}</a>{% if not loop.last %}, {% endif %}
+    {% endfor %}.
+    Make someone else an owner first, or nobody will be able to manage
+    {{ 'it' if sole_owner_of | length == 1 else 'them' }}.
+  </p>
+{% endif %}
+{% if is_last_admin %}
+  <p class="form-error">
+    You are the only administrator on this server. Make someone else an admin
+    under <a href="/admin/users">People</a> first.
+  </p>
+{% endif %}
+
+<form method="post" action="/account/deactivate">
+  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+  <div class="field">
+    <label for="confirm">Type <strong>deactivate</strong> to confirm</label>
+    <input id="confirm" name="confirm" type="text" autocomplete="off" placeholder="deactivate">
+  </div>
+  <button class="danger" type="submit"
+          {% if sole_owner_of or is_last_admin %}disabled{% endif %}>
+    Deactivate my account
+  </button>
+</form>
+{% endblock %}

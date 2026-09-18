@@ -8,6 +8,7 @@
   <h1>{{ project.name }}</h1>
   {% if project.description %}<p class="lead">{{ project.description }}</p>{% endif %}
   <p class="small faint">
+    {{ project_type.label }} project ·
     You are <span class="badge {{ role }}">{{ role }}</span> here ·
     <a href="/projects/{{ project.id }}/team">manage team</a>
   </p>
@@ -43,13 +44,7 @@
     {% for f in folders %}
       <a class="tile" href="/projects/{{ project.id }}/folders/{{ f.id }}">
         <span class="tile-title">
-          <span aria-hidden="true">
-            {%- if f.kind == 'code_context' %}◈
-            {%- elif f.kind == 'code_documentation' %}◉
-            {%- elif f.kind == 'technical' %}⚙
-            {%- elif f.kind == 'mom' %}🗓
-            {%- else %}▪{% endif -%}
-          </span>
+          <span aria-hidden="true">{{ folder_icon(f.kind) }}</span>
           {{ f.name }}
         </span>
         {% if f.description %}<span class="tile-desc">{{ f.description }}</span>{% endif %}
@@ -146,14 +141,17 @@
       <div class="card">
         <h3>Meeting notes</h3>
         <p class="small muted">
-          Upload a MoM, transcript, or chat export. Suggested events appear in Review.
+          Upload a MoM, transcript, WhatsApp export, Word file, or PDF.
+          Suggested events appear in Review.
         </p>
         <form method="post" action="/projects/{{ project.id }}/upload"
               enctype="multipart/form-data">
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
           <div class="field">
-            <label for="file">Text file</label>
-            <input id="file" name="file" type="file" accept=".txt,.md,.vtt,.srt,.csv">
+            <label for="file">File</label>
+            <input id="file" name="file" type="file" accept="{{ upload_accept }}">
+            <span class="hint">{{ accepted_uploads }}. A WhatsApp export is
+              recognised on its own and cleaned up before it is read.</span>
           </div>
           <details>
             <summary class="small muted">Or paste text</summary>
@@ -226,6 +224,7 @@
         <div class="doc-row">
           <span class="doc-name">{{ s.filename }}</span>
           <span class="doc-when">
+            {%- if s.connector_name %}via {{ s.connector_name }} · {% endif -%}
             {{ s.status }}{% if s.event_count %} · {{ s.event_count }} event(s){% endif %}
           </span>
         </div>

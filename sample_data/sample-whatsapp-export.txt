@@ -1,0 +1,24 @@
+12/03/2024, 08.55 - Messages and calls are end-to-end encrypted. No one outside of this chat, not even WhatsApp, can read or listen to them.
+12/03/2024, 08.56 - Budi Santoso created group "Proyek Gudang Surabaya"
+12/03/2024, 08.57 - Budi Santoso added Siti Rahmawati
+12/03/2024, 08.57 - Budi Santoso added Andi Pratama
+12/03/2024, 09.02 - Budi Santoso: Selamat pagi semua. Ini grup untuk koordinasi go-live gudang Surabaya.
+12/03/2024, 09.05 - Siti Rahmawati: Pagi pak. Saya sudah cek data master customer, masih ada sekitar 800 record duplikat.
+12/03/2024, 09.06 - Budi Santoso: Siapa yang handle cleansing-nya?
+12/03/2024, 09.08 - Siti Rahmawati: Belum ada yang ditunjuk pak. Ini risiko kalau sampai go-live belum bersih.
+12/03/2024, 09.09 - Budi Santoso: <Media omitted>
+12/03/2024, 09.12 - Andi Pratama: Untuk penomoran batch finished goods, kita jadi pakai format lama atau baru?
+12/03/2024, 09.15 - Budi Santoso: Kita putuskan pakai batch numbering baru. Format YYMMDD-LINE-SEQ.
+Ini sudah disetujui QA minggu lalu, jadi tidak usah dibahas ulang.
+12/03/2024, 09.16 - Andi Pratama: Oke noted.
+12/03/2024, 09.20 - Siti Rahmawati: Pak, file mapping chart of accounts kapan bisa dikirim?
+12/03/2024, 09.22 - Budi Santoso: Saya kirim hari Jumat 15 Maret ya.
+12/03/2024, 09.23 - Siti Rahmawati: This message was deleted
+12/03/2024, 09.25 - Andi Pratama: Satu lagi, query stock aging report sudah saya ubah kemarin supaya include consignment stock.
+12/03/2024, 09.27 - Budi Santoso: Itu sudah dibahas di mana? Saya belum dengar.
+12/03/2024, 09.28 - Andi Pratama: Permintaan dari finance langsung pak, lewat telepon.
+12/03/2024, 09.31 - Budi Santoso: Tolong dicatat dulu. Perubahan tanpa keputusan tertulis itu yang bikin kita repot waktu audit.
+12/03/2024, 09.33 - Siti Rahmawati: Pertanyaan yang masih menggantung: siapa yang approve credit limit override?
+12/03/2024, 09.35 - Budi Santoso: Belum ada jawaban dari pihak client. Saya follow up minggu ini.
+12/03/2024, 09.36 - Andi Pratama: image omitted
+12/03/2024, 09.40 - Budi Santoso: Oke, cukup dulu. Nanti kita review lagi hari Kamis.

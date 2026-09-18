@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}All projects | TooGather{% endblock %}
+
+{#- Counts, not contents. An admin can see what the server holds and who
+    looks after each project, without reading what is inside. -#}
+{% block content %}
+  <h1>All projects</h1>
+  <p class="lead">
+    Every project on this server. You are not on these teams unless you were
+    invited — letting yourself in is recorded in the audit log.
+  </p>
+
+  <div class="card">
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Project</th>
+          <th scope="col">Owners</th>
+          <th scope="col">People</th>
+          <th scope="col">Docs</th>
+          <th scope="col">Events</th>
+          <th scope="col"><span class="visually-hidden">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in projects %}
+          {% set is_mine = p.id | string in my_project_ids %}
+          <tr>
+            <td>
+              {% if is_mine %}
+                <a href="/projects/{{ p.id }}">{{ p.name }}</a>
+              {% else %}
+                {{ p.name }}
+              {% endif %}
+              {% if p.description %}<div class="small faint">{{ p.description }}</div>{% endif %}
+            </td>
+            <td class="small">{{ p.owners or '—' }}</td>
+            <td class="small">{{ p.member_count }}</td>
+            <td class="small">{{ p.document_count }}</td>
+            <td class="small">{{ p.event_count }}</td>
+            <td>
+              {% if is_mine %}
+                <span class="badge member">you are in</span>
+              {% else %}
+                <form class="inline-form" method="post"
+                      action="/admin/projects/{{ p.id }}/join">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <button class="ghost" type="submit">Let myself in</button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if not projects %}
+    <div class="empty">No projects on this server yet.</div>
+  {% endif %}
+{% endblock %}

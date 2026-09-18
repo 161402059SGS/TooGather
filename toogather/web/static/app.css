@@ -17,6 +17,9 @@
      8. Documents and editor
      9. Team and roles
     10. Flash messages and small print
+   10a. Small form pieces
+   10b. Project type picker
+   10c. Connectors
     11. Narrow screens
    ===================================================================== */
 
@@ -620,6 +623,105 @@ table.data tr:last-child td { border-bottom: 0; }
 }
 
 /* ---------------------------------------------------------------------
+   10a. Small pieces the forms lean on
+   --------------------------------------------------------------------- */
+
+/* A problem stated in place, above the control that caused it. */
+.form-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: 13.5px;
+  margin: 10px 0;
+}
+
+/* A checkbox and its wording on one line, with the box aligned to the first
+   line of text rather than to the middle of a wrapped label. */
+.checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-weight: 400;
+  margin: 8px 0;
+  cursor: pointer;
+}
+.checkbox input { margin-top: 3px; flex: none; }
+.checkbox.small { font-size: 12.5px; color: var(--text-muted); }
+
+/* Tables scroll sideways on a phone instead of squeezing every column. */
+.table-wrap { overflow-x: auto; margin: 12px 0; }
+
+/* ---------------------------------------------------------------------
+   10b. Project type picker, on the home composer
+   --------------------------------------------------------------------- */
+.type-picker {
+  border: 0;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.type-picker legend { padding: 0 0 8px; }
+
+.type-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas: "radio label" "radio tagline";
+  gap: 1px 10px;
+  align-items: start;
+  padding: 12px 14px;
+  border: 1px solid var(--border-firm);
+  border-radius: var(--radius);
+  cursor: pointer;
+  background: var(--bg);
+}
+.type-option:hover { background: var(--bg-sub); }
+.type-option input { grid-area: radio; margin-top: 3px; }
+.type-label   { grid-area: label; font-weight: 500; }
+.type-tagline { grid-area: tagline; font-size: 12.5px; color: var(--text-faint); }
+
+/* :has() lets the whole card show which one is chosen. Browsers without it
+   still show the checked radio, so nothing is lost. */
+.type-option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ---------------------------------------------------------------------
+   10c. Connectors
+   --------------------------------------------------------------------- */
+.connector {
+  border: 1px solid var(--border-firm);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  margin-bottom: 14px;
+  background: var(--bg);
+}
+.connector-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.connector-head h3 { margin: 0; }
+.connector-note {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 6px 0 12px;
+}
+.connector-note code { font-family: var(--mono); font-size: 12px; }
+
+/* A run's outcome, as a word rather than a colour alone. */
+.status-dot { font-size: 12.5px; font-weight: 500; }
+.status-ok      { color: var(--ok); }
+.status-failed  { color: var(--danger); }
+.status-running { color: var(--warn); }
+.status-new     { color: var(--text-faint); }
+
+/* ---------------------------------------------------------------------
    11. Narrow screens
    --------------------------------------------------------------------- */
 @media (max-width: 860px) {
@@ -640,6 +742,7 @@ table.data tr:last-child td { border-bottom: 0; }
   .page { padding: 32px 16px 80px; }
   .home { padding: 32px 16px 60px; min-height: 0; }
   .home-greeting { font-size: 24px; }
+  .type-picker { grid-template-columns: 1fr; }
   .editor-title { font-size: 26px; }
   h1 { font-size: 27px; }
 }

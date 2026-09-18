@@ -43,16 +43,88 @@ def get_user_by_email(email: str) -> dict | None:
 
 
 def get_user(user_id: str) -> dict | None:
+    """
+    One active person, or None.
+
+    is_active is both filtered on and returned: the web app re-checks it on
+    every request, so leaving the column out of the SELECT would make that
+    check raise instead of pass.
+    """
     return db.fetch_one(
-        "SELECT id, email, display_name, is_admin FROM users WHERE id = %s AND is_active",
+        """
+        SELECT id, email, display_name, is_admin, is_active
+        FROM users WHERE id = %s AND is_active
+        """,
+        (user_id,),
+    )
+
+
+def set_display_name(user_id: str, display_name: str) -> None:
+    """
+    Rename a person.
+
+    Their id does not change, so everything they have already created stays
+    attached to them and simply shows the new name.
+    """
+    db.execute(
+        "UPDATE users SET display_name = %s WHERE id = %s", (display_name.strip(), user_id)
+    )
+
+
+def projects_solely_owned_by(user_id: str) -> list[dict]:
+    """
+    Projects where this person is the only owner.
+
+    Used before someone switches their own account off: leaving a project with
+    no owner means nobody can ever manage it again.
+    """
+    return db.fetch_all(
+        """
+        SELECT p.id, p.name
+        FROM project_members m
+        JOIN projects p ON p.id = m.project_id
+        WHERE m.user_id = %s AND m.role = 'owner'
+          AND (SELECT count(*) FROM project_members o
+                WHERE o.project_id = p.id AND o.role = 'owner') = 1
+        ORDER BY p.name
+        """,
         (user_id,),
     )
 
 
 def list_users() -> list[dict]:
+    """
+    Everyone who has ever joined, with how many projects they are on.
+
+    Ordered by name, not email: people who joined by name have no email.
+    """
     return db.fetch_all(
-        "SELECT id, email, display_name, is_admin, is_active, created_at FROM users ORDER BY email"
+        """
+        SELECT u.id, u.email, u.display_name, u.is_admin, u.is_active, u.created_at,
+               (SELECT count(*) FROM project_members m WHERE m.user_id = u.id) AS project_count
+        FROM users u
+        ORDER BY u.display_name
+        """
     )
+
+
+def count_admins() -> int:
+    row = db.fetch_one("SELECT count(*) AS n FROM users WHERE is_admin AND is_active")
+    return int(row["n"]) if row else 0
+
+
+def set_user_admin(user_id: str, is_admin: bool) -> None:
+    db.execute("UPDATE users SET is_admin = %s WHERE id = %s", (is_admin, user_id))
+
+
+def set_user_active(user_id: str, is_active: bool) -> None:
+    """
+    Switch a person off without deleting them.
+
+    Their name stays on the events and documents they created; deleting the
+    row would blank out that history.
+    """
+    db.execute("UPDATE users SET is_active = %s WHERE id = %s", (is_active, user_id))
 
 
 # =====================================================================
@@ -60,16 +132,17 @@ def list_users() -> list[dict]:
 # =====================================================================
 
 
-def create_project(name: str, description: str, created_by: str) -> dict:
+def create_project(name: str, description: str, created_by: str,
+                   template_kind: str = "software") -> dict:
     """Create a project and make its creator the owner, in one transaction."""
     with db.transaction() as conn:
         project = conn.execute(
             """
-            INSERT INTO projects (name, description, created_by)
-            VALUES (%s, %s, %s)
+            INSERT INTO projects (name, description, created_by, template_kind)
+            VALUES (%s, %s, %s, %s)
             RETURNING *
             """,
-            (name.strip(), description.strip(), created_by),
+            (name.strip(), description.strip(), created_by, template_kind),
         ).fetchone()
         conn.execute(
             "INSERT INTO project_members (project_id, user_id, role) VALUES (%s, %s, %s)",
@@ -79,9 +152,13 @@ def create_project(name: str, description: str, created_by: str) -> dict:
 
 
 def list_projects_for_user(user: dict) -> list[dict]:
-    """Admins see every project; everyone else sees projects they belong to."""
-    if user["is_admin"]:
-        return db.fetch_all("SELECT *, 'admin' AS my_role FROM projects ORDER BY name")
+    """
+    The projects this person belongs to.
+
+    Being an admin does not put a project in this list. An admin runs the
+    server; that is not the same as being on every team. They can still reach
+    any project through the admin overview, and doing so is recorded.
+    """
     return db.fetch_all(
         """
         SELECT p.*, m.role AS my_role
@@ -94,6 +171,28 @@ def list_projects_for_user(user: dict) -> list[dict]:
     )
 
 
+def list_all_projects() -> list[dict]:
+    """
+    Every project on the server, for the admin overview.
+
+    Returns counts rather than contents: an admin can see that a project
+    exists and who looks after it without reading what is inside it.
+    """
+    return db.fetch_all(
+        """
+        SELECT p.id, p.name, p.description, p.created_at,
+               (SELECT count(*) FROM project_members m WHERE m.project_id = p.id) AS member_count,
+               (SELECT count(*) FROM events e WHERE e.project_id = p.id) AS event_count,
+               (SELECT count(*) FROM documents d WHERE d.project_id = p.id) AS document_count,
+               (SELECT string_agg(u.display_name, ', ' ORDER BY u.display_name)
+                  FROM project_members m JOIN users u ON u.id = m.user_id
+                 WHERE m.project_id = p.id AND m.role = 'owner') AS owners
+        FROM projects p
+        ORDER BY p.name
+        """
+    )
+
+
 def get_project(project_id: str) -> dict | None:
     return db.fetch_one("SELECT * FROM projects WHERE id = %s", (project_id,))
 
@@ -101,10 +200,12 @@ def get_project(project_id: str) -> dict | None:
 def get_role(project_id: str, user: dict) -> str | None:
     """
     Return the user's role in a project, or None if they have no access.
-    Admins are treated as owners of every project.
+
+    An admin gets no special role here. Whoever runs the server can read the
+    database regardless, so pretending otherwise would be theatre; what this
+    buys is that an admin's access is deliberate and leaves a trace in the
+    audit log, instead of every project silently appearing in their sidebar.
     """
-    if user["is_admin"]:
-        return Role.OWNER.value
     row = db.fetch_one(
         "SELECT role FROM project_members WHERE project_id = %s AND user_id = %s",
         (project_id, user["id"]),
@@ -173,14 +274,38 @@ def create_source(project_id: str, filename: str, content: str, user_id: str, ki
     )
 
 
+def create_connector_source(project_id: str, connector_id: str, external_id: str,
+                            filename: str, content: str) -> dict | None:
+    """
+    Store material a connector brought in, or None if it is already here.
+
+    The partial unique index on (connector_id, external_id) does the
+    de-duplication, so a connector that re-reads the same commit after a crash
+    cannot create a second copy. ON CONFLICT DO NOTHING turns that into a
+    quiet skip rather than an error the worker has to catch.
+    """
+    return db.fetch_one(
+        """
+        INSERT INTO sources (project_id, kind, filename, content, connector_id, external_id)
+        VALUES (%s, 'connector', %s, %s, %s, %s)
+        ON CONFLICT (connector_id, external_id)
+            WHERE connector_id IS NOT NULL AND external_id <> ''
+            DO NOTHING
+        RETURNING id, filename, status, created_at
+        """,
+        (project_id, filename, content, connector_id, external_id),
+    )
+
+
 def list_sources(project_id: str, limit: int = 20) -> list[dict]:
     return db.fetch_all(
         """
         SELECT s.id, s.filename, s.status, s.status_note, s.created_at, s.processed_at,
-               u.display_name AS uploaded_by_name,
+               s.kind, u.display_name AS uploaded_by_name, c.name AS connector_name,
                (SELECT count(*) FROM events e WHERE e.source_id = s.id) AS event_count
         FROM sources s
         LEFT JOIN users u ON u.id = s.uploaded_by
+        LEFT JOIN connectors c ON c.id = s.connector_id
         WHERE s.project_id = %s
         ORDER BY s.created_at DESC
         LIMIT %s
@@ -489,12 +614,18 @@ def all_project_ids() -> list[str]:
 
 
 def project_digest_recipients(project_id: str) -> list[dict]:
-    """Owners receive the weekly digest; they are the ones expected to act on it."""
+    """
+    Owners receive the weekly digest; they are the ones expected to act on it.
+
+    Owners who joined by name have no email address, so they are skipped here
+    rather than handed to the mailer as a NULL recipient.
+    """
     return db.fetch_all(
         """
         SELECT u.email, u.display_name
         FROM project_members m JOIN users u ON u.id = m.user_id
         WHERE m.project_id = %s AND m.role = 'owner' AND u.is_active
+          AND u.email IS NOT NULL AND u.email <> ''
         """,
         (project_id,),
     )
@@ -525,36 +656,10 @@ def create_named_user(display_name: str, is_admin: bool) -> dict:
 
 # =====================================================================
 # Folders
+#
+# Which folders a new project starts with is decided by its project type,
+# not here: see toogather/project_types.py.
 # =====================================================================
-
-# The four drawers every new project starts with. Order here is the order
-# they appear in the sidebar.
-DEFAULT_FOLDERS: list[dict] = [
-    {
-        "name": "Code Context",
-        "slug": "code-context",
-        "kind": "code_context",
-        "description": "How the system is put together: modules, data flow, why it is shaped this way.",
-    },
-    {
-        "name": "Code Documentation",
-        "slug": "code-documentation",
-        "kind": "code_documentation",
-        "description": "How to use it: setup, APIs, commands, examples.",
-    },
-    {
-        "name": "Technical",
-        "slug": "technical",
-        "kind": "technical",
-        "description": "Infrastructure, deployment, environments, operational runbooks.",
-    },
-    {
-        "name": "Minutes of Meeting",
-        "slug": "mom",
-        "kind": "mom",
-        "description": "What was discussed and agreed, meeting by meeting.",
-    },
-]
 
 
 def create_folder(project_id: str, name: str, slug: str, kind: str,
@@ -762,3 +867,197 @@ def invite_problem(invite: dict | None) -> str | None:
     if invite["max_uses"] is not None and invite["uses"] >= invite["max_uses"]:
         return "That invite has already been used the maximum number of times."
     return None
+
+
+# =====================================================================
+# Per-project AI provider settings
+#
+# A row here means "this project does not use the server's AI provider".
+# No row means it does. The API key is stored encrypted; this module only
+# moves the ciphertext around, and toogather/crypto.py is the only place
+# that can read it.
+# =====================================================================
+
+
+def get_ai_settings(project_id: str) -> dict | None:
+    return db.fetch_one(
+        "SELECT * FROM project_ai_settings WHERE project_id = %s", (project_id,)
+    )
+
+
+def save_ai_settings(project_id: str, base_url: str, model: str,
+                     api_key_encrypted: str | None, updated_by: str | None) -> None:
+    """
+    Save a project's AI provider.
+
+    `api_key_encrypted` of None means "leave whatever key is stored alone",
+    which is how the settings form can be submitted without the key being
+    present in the page. An empty string clears it.
+    """
+    db.execute(
+        """
+        INSERT INTO project_ai_settings (project_id, base_url, model,
+                                         api_key_encrypted, updated_by)
+        VALUES (%s, %s, %s, coalesce(%s, ''), %s)
+        ON CONFLICT (project_id) DO UPDATE SET
+            base_url = EXCLUDED.base_url,
+            model = EXCLUDED.model,
+            api_key_encrypted = coalesce(%s, project_ai_settings.api_key_encrypted),
+            updated_by = EXCLUDED.updated_by,
+            updated_at = now()
+        """,
+        (project_id, base_url.strip(), model.strip(), api_key_encrypted, updated_by,
+         api_key_encrypted),
+    )
+
+
+def clear_ai_settings(project_id: str) -> None:
+    """Go back to the server's AI provider. The stored key is destroyed with the row."""
+    db.execute("DELETE FROM project_ai_settings WHERE project_id = %s", (project_id,))
+
+
+# =====================================================================
+# Connectors
+# =====================================================================
+
+
+def create_connector(project_id: str, kind: str, name: str, config: dict,
+                     secret_encrypted: str, run_every_minutes: int,
+                     created_by: str | None) -> dict:
+    return db.fetch_one(
+        """
+        INSERT INTO connectors (project_id, kind, name, config, secret_encrypted,
+                                run_every_minutes, created_by)
+        VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)
+        RETURNING *
+        """,
+        (project_id, kind, name.strip(), json.dumps(config), secret_encrypted,
+         run_every_minutes, created_by),
+    )
+
+
+def list_connectors(project_id: str) -> list[dict]:
+    return db.fetch_all(
+        """
+        SELECT c.*, (SELECT count(*) FROM sources s WHERE s.connector_id = c.id) AS source_count
+        FROM connectors c
+        WHERE c.project_id = %s
+        ORDER BY c.created_at
+        """,
+        (project_id,),
+    )
+
+
+def get_connector(connector_id: str) -> dict | None:
+    return db.fetch_one("SELECT * FROM connectors WHERE id = %s", (connector_id,))
+
+
+def update_connector(connector_id: str, project_id: str, name: str, config: dict,
+                     secret_encrypted: str | None, run_every_minutes: int,
+                     enabled: bool) -> None:
+    """
+    Save a connector's settings.
+
+    `secret_encrypted` of None keeps the stored secret, the same convention as
+    the AI key: the form never carries a secret it already holds.
+
+    project_id is in the WHERE clause so a request cannot reach across into
+    another project's connector by guessing an id.
+    """
+    db.execute(
+        """
+        UPDATE connectors
+        SET name = %s,
+            config = %s::jsonb,
+            secret_encrypted = coalesce(%s, secret_encrypted),
+            run_every_minutes = %s,
+            enabled = %s
+        WHERE id = %s AND project_id = %s
+        """,
+        (name.strip(), json.dumps(config), secret_encrypted, run_every_minutes,
+         enabled, connector_id, project_id),
+    )
+
+
+def delete_connector(connector_id: str, project_id: str) -> None:
+    """
+    Remove a connector. Sources it brought in stay, with connector_id set to
+    NULL, because the events made from them are still true.
+    """
+    db.execute(
+        "DELETE FROM connectors WHERE id = %s AND project_id = %s", (connector_id, project_id)
+    )
+
+
+def run_connector_now(connector_id: str, project_id: str) -> None:
+    """Make a connector due immediately, for the "Check now" button."""
+    db.execute(
+        """
+        UPDATE connectors SET last_run_at = NULL
+        WHERE id = %s AND project_id = %s AND last_status <> 'running'
+        """,
+        (connector_id, project_id),
+    )
+
+
+def claim_due_connector() -> dict | None:
+    """
+    Take the connector that is most overdue and mark it 'running'.
+
+    The same FOR UPDATE SKIP LOCKED pattern as the source queue, for the same
+    reason: two workers must never run one connector at the same moment, and
+    the database is a good enough queue that no other service is needed.
+
+    A connector that has never run (last_run_at IS NULL) goes first.
+    """
+    return db.fetch_one(
+        """
+        UPDATE connectors c
+        SET last_status = 'running', last_run_at = now()
+        WHERE c.id = (
+            SELECT id FROM connectors
+            WHERE enabled
+              AND last_status <> 'running'
+              AND (last_run_at IS NULL
+                   OR last_run_at < now() - make_interval(mins => run_every_minutes))
+            ORDER BY last_run_at NULLS FIRST
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+        )
+        RETURNING c.*
+        """
+    )
+
+
+def finish_connector(connector_id: str, status: str, note: str, cursor: str | None) -> None:
+    """
+    Record how a run went.
+
+    `cursor` of None leaves the stored cursor alone, which is what a failed run
+    wants: the next run should try the same range again rather than skipping it.
+    """
+    db.execute(
+        """
+        UPDATE connectors
+        SET last_status = %s, last_note = %s, cursor = coalesce(%s, cursor)
+        WHERE id = %s
+        """,
+        (status, note[:1000], cursor, connector_id),
+    )
+
+
+def release_running_connectors() -> int:
+    """
+    If a worker died mid-run, its connector stays 'running' forever.
+    On worker start, put those back to a state that can be claimed again.
+    """
+    with db.transaction() as conn:
+        cur = conn.execute(
+            """
+            UPDATE connectors
+            SET last_status = 'failed',
+                last_note = 'The worker stopped during this run. It will be retried.'
+            WHERE last_status = 'running'
+            """
+        )
+        return cur.rowcount
